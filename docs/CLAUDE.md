@@ -53,4 +53,4 @@ Read in this order before coding: `README.md`, `rules.md`, `architecture.md`, `d
 
 ## Phase pointer
 
-Current phase: **P0/P1**. Build order for P1: repo and CI -> Postgres/Redis compose -> `MarketDataProvider` with `ReplayProvider` -> bar builder and indicators -> strategy interface and trend strategy -> `PaperBroker` with cost/slippage model -> portfolio service and audit log -> minimal dashboard.
+Current phase: **P1-P3 built for paper; P4 paper validation running.** The owner asked for sentiment and scanning together with the paper core, so P1-P3 were built as one paper-only milestone (2026-09-30). Code lives in `backend/` (Python) and `frontend/` (Next.js). Nothing that can place a live order exists yet; the Kite adapter comes only after the go-live gates. `docs/risk-features.md` tracks which risk controls are built.

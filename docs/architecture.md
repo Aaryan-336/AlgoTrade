@@ -79,11 +79,12 @@
 |-------|--------|--------|
 | Core services | Python 3.12, FastAPI | Fits the owner's stack; rich finance libraries |
 | Data store | PostgreSQL (TimescaleDB optional) | Reliable, relational, good for time series at this scale |
-| Cache / pub-sub / locks | Redis | Fast messaging, distributed locks, rate limiting |
+| Cache / pub-sub / locks | Redis (deferred) | Not needed for one user in paper mode; Postgres plus in-process state instead. Revisit if the watchdog must act on the broker directly (live). |
 | Dashboard | Next.js + TradingView Lightweight Charts | Free, open-source charting library |
 | Workflow glue | n8n (optional) | News ingestion, schedules, alerts; never order placement or risk |
 | Broker | Zerodha Kite Connect | Chosen broker |
-| LLM | Claude or Groq API | Structured sentiment extraction |
+| LLM | Groq API (`openai/gpt-oss-120b` default, configurable) | Structured sentiment extraction, JSON mode + Pydantic validation |
+| Market data (paper) | Upstox REST API (polled) | Free, official, real-time; see `data-sources.md` §9 |
 | Packaging | Docker Compose | Reproducible local and VPS setup |
 | Observability | Structured logs, Prometheus metrics, simple Grafana (optional) | Enough for a single-user system |
 
@@ -130,3 +131,5 @@ Keep a short `docs/adr/` folder. Initial decisions:
 - ADR-003: Risk Engine as a mandatory gate; no direct broker access for strategies.
 - ADR-004: LLM output limited to validated structured sentiment.
 - ADR-005: Delivery/swing equities first; F&O gated.
+- ADR-006: Upstox as the paper-phase data feed; polled, not streamed (see `adr/006-upstox-polling.md`).
+- ADR-007: Redis deferred; one engine process plus an independent watchdog sharing only the database.
