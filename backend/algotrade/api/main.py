@@ -72,6 +72,10 @@ class BacktestRequest(BaseModel):
     start: date
     end: date
     capital: float | None = Field(default=None, gt=0)
+    # Unsaved settings from the Settings page. Used for this backtest only; they
+    # never touch the live config, so they are allowed during market hours.
+    risk: dict[str, Any] | None = None
+    strategy: dict[str, Any] | None = None
 
 
 def create_app(settings: Settings | None = None, runtime: Runtime | None = None,
@@ -405,6 +409,13 @@ def create_app(settings: Settings | None = None, runtime: Runtime | None = None,
         if body.end <= body.start:
             raise HTTPException(422, "end must be after start")
         cfg = rt.config
+        draft = body.risk is not None and body.strategy is not None
+        if draft:
+            try:
+                cfg = AppConfig(risk=RiskConfig.model_validate(body.risk),
+                                strategy=StrategyConfig.model_validate(body.strategy))
+            except ValueError as exc:
+                raise HTTPException(422, f"invalid settings: {exc}") from exc
         if body.capital:
             cfg = cfg.model_copy(update={"strategy": cfg.strategy.model_copy(
                 update={"capital": Decimal(str(body.capital))})})
@@ -428,7 +439,8 @@ def create_app(settings: Settings | None = None, runtime: Runtime | None = None,
         result = await asyncio.to_thread(run_backtest, cfg, uni, data, body.start, body.end,
                                          rt.calendar)
         params = {"symbols": uni.symbols, "start": body.start, "end": body.end,
-                  "capital": float(cfg.strategy.capital), "config_version": rt.config_version,
+                  "capital": float(cfg.strategy.capital),
+                  "config_version": "draft" if draft else rt.config_version,
                   "provider": prov.name, "failed": failed}
         run_id = rt.repo.save_backtest(rt.clock.now(), params, result.metrics,
                                        result.equity_curve, result.trades)

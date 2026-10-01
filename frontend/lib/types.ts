@@ -182,7 +182,14 @@ export type Trade = {
 
 export type BacktestResult = {
   id: number;
-  params: { symbols: string[]; start: string; end: string; capital: number; failed?: string[] };
+  params: {
+    symbols: string[];
+    start: string;
+    end: string;
+    capital: number;
+    failed?: string[];
+    config_version?: number | string;
+  };
   metrics: Record<string, number | string | null | string[]>;
   equity_curve: { date: string; equity: number }[];
   trades: Trade[];

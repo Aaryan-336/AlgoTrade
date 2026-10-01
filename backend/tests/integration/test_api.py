@@ -73,3 +73,20 @@ def test_backtest_needs_ready_provider_or_data() -> None:
         r = c.post("/api/backtest", json={"start": "2025-01-01", "end": "2025-06-01"},
                    headers=H)
         assert r.status_code == 502  # replay provider has no data loaded
+
+
+def test_backtest_accepts_unsaved_settings_during_market_hours() -> None:
+    with client(ManualClock(NOW)) as c:  # market open
+        cfg = c.get("/api/config", headers=H).json()
+        bad = {"start": "2025-01-01", "end": "2025-06-01",
+               "risk": {**cfg["risk"], "risk_per_trade_pct": 9}, "strategy": cfg["strategy"]}
+        assert c.post("/api/backtest", json=bad, headers=H).status_code == 422
+        trend = {**cfg["strategy"]["strategies"]["trend"], "fast_ema": 50, "slow_ema": 200}
+        strategy = {**cfg["strategy"],
+                    "strategies": {**cfg["strategy"]["strategies"], "trend": trend}}
+        ok = {"start": "2025-01-01", "end": "2025-06-01", "risk": cfg["risk"],
+              "strategy": strategy}
+        # Passes validation; fails only because the replay provider has no data.
+        assert c.post("/api/backtest", json=ok, headers=H).status_code == 502
+        # The live config is untouched.
+        assert c.get("/api/config", headers=H).json()["latest_version"] == 1

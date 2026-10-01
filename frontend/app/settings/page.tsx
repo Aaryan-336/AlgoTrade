@@ -1,10 +1,12 @@
 "use client";
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useRouter } from "next/navigation";
 import { useEffect, useState, type ReactNode } from "react";
 import { Badge, Button, Card, ErrorNote, PageHeader } from "@/components/ui";
 import { API_URL, api, getToken, post, put, setToken } from "@/lib/api";
 import { when } from "@/lib/format";
+import { clearDraft, loadDraft, saveDraft } from "@/lib/draft";
 import { useLive } from "@/lib/live";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- config is a validated server-side schema
@@ -45,6 +47,7 @@ function Field({ label, hint, children }: { label: string; hint?: string; childr
 export default function Settings() {
   const { status } = useLive();
   const qc = useQueryClient();
+  const router = useRouter();
   const cfg = useQuery({ queryKey: ["config"], queryFn: () => api<ConfigResponse>("/api/config") });
   const [draft, setDraft] = useState<{ risk: Json; strategy: Json } | null>(null);
   const [reason, setReason] = useState("");
@@ -53,7 +56,7 @@ export default function Settings() {
   const [token, setTokenInput] = useState("");
 
   useEffect(() => {
-    if (cfg.data && !draft) setDraft({ risk: cfg.data.risk, strategy: cfg.data.strategy });
+    if (cfg.data && !draft) setDraft(loadDraft() ?? { risk: cfg.data.risk, strategy: cfg.data.strategy });
   }, [cfg.data, draft]);
   useEffect(() => setTokenInput(getToken()), []);
 
@@ -64,7 +67,6 @@ export default function Settings() {
     <input
       type="number"
       step={step}
-      disabled={locked}
       className="w-full"
       value={String(get(draft[section], path) ?? "")}
       onChange={(e) => setDraft({ ...draft, [section]: set(draft[section], path, e.target.value === "" ? "" : Number(e.target.value)) })}
@@ -74,7 +76,6 @@ export default function Settings() {
     <label className="flex items-center gap-2 text-[13px]">
       <input
         type="checkbox"
-        disabled={locked}
         checked={Boolean(get(draft[section], path))}
         onChange={(e) => setDraft({ ...draft, [section]: set(draft[section], path, e.target.checked) })}
       />
@@ -89,6 +90,7 @@ export default function Settings() {
     try {
       const r = await put<{ version: number; note: string }>("/api/config", { ...draft, reason });
       setSaved(`Saved as version ${r.version}. ${r.note}`);
+      clearDraft();
       setReason("");
       qc.invalidateQueries();
     } catch (e) {
@@ -101,7 +103,7 @@ export default function Settings() {
       <PageHeader
         title="Settings"
         sub="Every change is saved as a new config version with your reason. Changes are refused during market hours (09:15–15:30 IST)."
-        action={<Badge tone={locked ? "warn" : "pos"} dot>{locked ? "Locked: market open" : "Editable"}</Badge>}
+        action={<Badge tone={locked ? "warn" : "pos"} dot>{locked ? "Live config locked until 15:30 · edit and backtest freely" : "Editable"}</Badge>}
       />
 
       <Card title="Connections">
@@ -140,7 +142,7 @@ export default function Settings() {
         </div>
       </Card>
 
-      <fieldset disabled={locked} className="space-y-5">
+      <fieldset className="space-y-5">
         <Card title="Capital and trading style">
           <div className="grid gap-5 md:grid-cols-3">
             <Field label="Paper capital (₹)" hint="Starting cash for the paper account">{num("strategy", "capital", "1000")}</Field>
@@ -264,11 +266,19 @@ export default function Settings() {
       <Card>
         <div className="flex flex-col gap-3 md:flex-row md:items-end">
           <Field label="Reason for this change" hint="Stored with the new config version">
-            <input className="w-full md:w-[420px]" value={reason} onChange={(e) => setReason(e.target.value)} disabled={locked} />
+            <input className="w-full md:w-[420px]" value={reason} onChange={(e) => setReason(e.target.value)} />
           </Field>
           <div className="flex gap-2">
             <Button variant="primary" disabled={locked || reason.trim().length < 3} onClick={save}>Save new version</Button>
-            <Button variant="ghost" onClick={() => setDraft({ risk: cfg.data!.risk, strategy: cfg.data!.strategy })}>Discard</Button>
+            <Button
+              onClick={() => {
+                saveDraft(draft);
+                router.push("/backtest?draft=1");
+              }}
+            >
+              Backtest these settings
+            </Button>
+            <Button variant="ghost" onClick={() => { clearDraft(); setDraft({ risk: cfg.data!.risk, strategy: cfg.data!.strategy }); }}>Discard</Button>
           </div>
         </div>
         <div className="mt-3 space-y-2">

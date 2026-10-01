@@ -1,10 +1,12 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useMemo, useState } from "react";
+import Link from "next/link";
+import { useEffect, useMemo, useState } from "react";
 import { EquityChart } from "@/components/charts";
 import { Badge, Button, Card, Empty, ErrorNote, PageHeader, Stat } from "@/components/ui";
 import { api, post } from "@/lib/api";
+import { loadDraft, type Draft } from "@/lib/draft";
 import { day, humanize, money, pct, signedMoney, tone } from "@/lib/format";
 import type { BacktestResult, UniverseRow } from "@/lib/types";
 
@@ -35,10 +37,23 @@ export default function Backtest() {
   const [capital, setCapital] = useState("");
   const [symbols, setSymbols] = useState<string[]>([]);
   const [selected, setSelected] = useState<BacktestResult | null>(null);
+  const [draft, setDraft] = useState<Draft | null>(null);
+  const [useDraft, setUseDraft] = useState(false);
+  useEffect(() => {
+    const d = loadDraft();
+    setDraft(d);
+    setUseDraft(!!d);
+  }, []);
 
   const run = useMutation({
     mutationFn: () =>
-      post<BacktestResult>("/api/backtest", { start, end, symbols, capital: capital ? Number(capital) : undefined }),
+      post<BacktestResult>("/api/backtest", {
+        start,
+        end,
+        symbols,
+        capital: capital ? Number(capital) : undefined,
+        ...(useDraft && draft ? { risk: draft.risk, strategy: draft.strategy } : {}),
+      }),
     onSuccess: (r) => {
       setSelected(r);
       qc.invalidateQueries({ queryKey: ["backtests"] });
@@ -56,7 +71,26 @@ export default function Backtest() {
         title="Backtest"
         sub="Replays daily history through the same strategy, risk and paper-broker code, with costs and slippage. Sentiment is neutral here because past news can't be reliably replayed."
       />
-      <Card title="Run">
+      <Card
+        title="Run"
+        action={
+          draft ? (
+            <div className="flex rounded-lg border border-line-strong p-0.5 text-[12px]">
+              {([false, true] as const).map((v) => (
+                <button
+                  key={String(v)}
+                  onClick={() => setUseDraft(v)}
+                  className={`rounded-md px-2.5 py-1 ${useDraft === v ? "bg-surface-2 font-semibold" : "text-muted"}`}
+                >
+                  {v ? "Edited settings (unsaved)" : "Live config"}
+                </button>
+              ))}
+            </div>
+          ) : (
+            <Link href="/settings" className="text-xs text-accent">Edit strategy settings →</Link>
+          )
+        }
+      >
         <div className="grid gap-4 md:grid-cols-4">
           <label className="block">
             <span className="label">From</span>
@@ -99,7 +133,7 @@ export default function Backtest() {
       {shown ? (
         <>
           <Card
-            title={`${day(shown.params.start)} → ${day(shown.params.end)} · ${shown.params.symbols.length} symbols · ${money(shown.params.capital, 0)}`}
+            title={`${day(shown.params.start)} → ${day(shown.params.end)} · ${shown.params.symbols.length} symbols · ${money(shown.params.capital, 0)} · ${shown.params.config_version === "draft" ? "edited settings" : `config v${shown.params.config_version ?? "?"}`}`}
             action={shown.params.failed?.length ? <Badge tone="warn">{shown.params.failed.length} symbols had no data</Badge> : undefined}
           >
             <Metrics r={shown} />
