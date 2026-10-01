@@ -37,11 +37,23 @@ _TF = {"1d": ("days", "1"), "15m": ("minutes", "15")}
 _TF_LEN = {"1d": timedelta(hours=15, minutes=30), "15m": timedelta(minutes=15)}
 
 
+def _upstox_error(r: httpx.Response) -> str:
+    """Upstox's own error code and message (never contains our secrets)."""
+    try:
+        errs = r.json().get("errors") or []
+    except ValueError:
+        return ""
+    parts = [f"{e.get('errorCode', '')} {e.get('message', '')}".strip()
+             for e in errs if isinstance(e, dict)]
+    return f" ({'; '.join(p for p in parts if p)[:200]})" if parts else ""
+
+
 class UpstoxAuth:
     def __init__(self, api_key: str | None, api_secret: str | None, redirect_uri: str) -> None:
-        self.api_key = api_key
-        self.api_secret = api_secret
-        self.redirect_uri = redirect_uri
+        # Stray spaces or quotes from copy-paste are a common cause of 401s.
+        self.api_key = api_key.strip().strip("'\"") if api_key else None
+        self.api_secret = api_secret.strip().strip("'\"") if api_secret else None
+        self.redirect_uri = redirect_uri.strip()
         self._token: str | None = None
         self.token_set_at: datetime | None = None
         self.user: str | None = None
@@ -75,7 +87,10 @@ class UpstoxAuth:
             if own:
                 await c.aclose()
         if r.status_code != 200:
-            raise ProviderError(f"token exchange failed: HTTP {r.status_code}")
+            raise ProviderError(f"token exchange failed: HTTP {r.status_code}"
+                                f"{_upstox_error(r)}. Check UPSTOX_API_SECRET and that "
+                                f"UPSTOX_REDIRECT_URI ({self.redirect_uri}) matches the app "
+                                "exactly; each login code works only once.")
         body = r.json()
         token = body.get("access_token")
         if not isinstance(token, str) or not token:

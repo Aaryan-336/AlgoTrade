@@ -258,3 +258,14 @@ def test_upstox_401_clears_token() -> None:
     assert auth.token is None and not prov.is_ready()
     with pytest.raises(ProviderError):
         asyncio.run(prov.ltp(["INFY"]))  # not logged in
+
+
+def test_upstox_token_error_includes_upstox_message() -> None:
+    auth = UpstoxAuth(" key ", "'secret'", "http://localhost:8000/cb")
+    assert auth.api_key == "key" and auth.api_secret == "secret"
+    body = {"status": "error", "errors": [{"errorCode": "UDAPI100016",
+                                           "message": "Invalid Credentials"}]}
+    client = httpx.AsyncClient(transport=httpx.MockTransport(
+        lambda r: httpx.Response(401, json=body)))
+    with pytest.raises(ProviderError, match="UDAPI100016 Invalid Credentials"):
+        asyncio.run(auth.exchange_code("code", client))
