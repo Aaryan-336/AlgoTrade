@@ -141,6 +141,23 @@ export default function Settings() {
       setEdit(null);
     }, "Deleted.");
   }
+  async function addNew() {
+    if (dirty && !window.confirm("Discard unsaved changes?")) return;
+    const name = window.prompt("Name for the new strategy", `Strategy ${versions.data!.profiles.length + 1}`);
+    if (!name) return;
+    // Start from the live version's settings, then edit freely: it isn't live until you make it live.
+    const base = versions.data!.profiles.find((p) => p.is_live) ?? versions.data!.profiles[0];
+    await act(async () => {
+      const r = await post<{ id: number }>("/api/profiles", {
+        name,
+        description: "",
+        risk: base.risk,
+        strategy: base.strategy,
+      });
+      setEdit({ id: r.id, name, description: "", risk: base.risk, strategy: base.strategy });
+      setDirty(false);
+    }, `Created "${name}". Edit it below, then Save and backtest.`);
+  }
   function backtest() {
     router.push(`/backtest?version=${cur.id}`);
   }
@@ -193,7 +210,15 @@ export default function Settings() {
         </div>
       </Card>
 
-      <Card title="Strategy versions" pad={false}>
+      <Card
+        title="Strategy versions"
+        pad={false}
+        action={
+          <Button variant="primary" onClick={addNew}>
+            + New strategy
+          </Button>
+        }
+      >
         <ul className="divide-y divide-line">
           {versions.data.profiles.map((p) => (
             <li key={p.id}>
