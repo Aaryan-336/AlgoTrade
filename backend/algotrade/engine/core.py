@@ -632,7 +632,9 @@ class TradingEngine:
             newest = max(self.price_ts.values(), default=None)
             age = (now - newest).total_seconds() if newest else float("inf")
             if age > rc.breakers.stale_data_halt_sec:
-                self.trip("stale_data", f"no fresh prices for {age:.0f}s", now)
+                why = (f"no fresh prices for {age:.0f}s" if newest
+                       else "no prices received yet: is the data feed connected?")
+                self.trip("stale_data", why, now)
             elif "stale_data" in self.breakers.tripped:
                 self.breakers.reset("stale_data")
                 self._audit(now, "breaker.reset", {"breaker": "stale_data",
