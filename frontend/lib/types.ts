@@ -210,3 +210,5 @@ export type Profile = {
 };
 
 export type ProfilesResponse = { market_open: boolean; live_id: number | null; profiles: Profile[] };
+
+export type BacktestSummary = Omit<BacktestResult, "equity_curve" | "trades"> & { ts: string };

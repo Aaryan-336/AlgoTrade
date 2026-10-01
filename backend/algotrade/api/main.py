@@ -520,6 +520,9 @@ def create_app(settings: Settings | None = None, runtime: Runtime | None = None,
                   "capital": float(cfg.strategy.capital),
                   "config_version": "draft" if draft else rt.config_version,
                   "version_name": label,
+                  # Exact settings used, so runs can be compared later.
+                  "settings": {"risk": cfg.risk.model_dump(mode="json"),
+                               "strategy": cfg.strategy.model_dump(mode="json")},
                   "provider": prov.name, "failed": failed}
         run_id = rt.repo.save_backtest(rt.clock.now(), params, result.metrics,
                                        result.equity_curve, result.trades)
@@ -528,10 +531,27 @@ def create_app(settings: Settings | None = None, runtime: Runtime | None = None,
                   "rejections": result.rejections})
 
     @app.get("/api/backtests", dependencies=guard)
-    async def backtests(request: Request) -> Any:
-        rows = rt_of(request).repo.backtests()
-        return j([{"id": r.id, "ts": r.ts, "params": r.params, "metrics": r.metrics,
-                   "equity_curve": r.equity_curve, "trades": r.trades} for r in rows])
+    async def backtests(request: Request, limit: int = Query(1000, ge=1, le=5000)) -> Any:
+        """Every saved run, newest first (summary only; open one for its trades)."""
+        rows = rt_of(request).repo.backtests(limit)
+        return j([{"id": r.id, "ts": r.ts, "params": r.params, "metrics": r.metrics}
+                  for r in rows])
+
+    @app.get("/api/backtests/{run_id}", dependencies=guard)
+    async def backtest_run(request: Request, run_id: int) -> Any:
+        r = rt_of(request).repo.backtest(run_id)
+        if r is None:
+            raise HTTPException(404, "backtest not found")
+        return j({"id": r.id, "ts": r.ts, "params": r.params, "metrics": r.metrics,
+                  "equity_curve": r.equity_curve, "trades": r.trades})
+
+    @app.delete("/api/backtests/{run_id}", dependencies=guard)
+    async def delete_backtest(request: Request, run_id: int) -> Any:
+        rt = rt_of(request)
+        if not rt.repo.delete_backtest(run_id):
+            raise HTTPException(404, "backtest not found")
+        rt.audit.record(rt.clock.now(), "owner", "backtest.deleted", {"id": run_id})
+        return {"ok": True}
 
     # ------------------------------------------------------------- audit
     @app.get("/api/audit", dependencies=guard)

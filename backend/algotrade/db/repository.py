@@ -380,7 +380,19 @@ class Repository:
             s.flush()
             return row.id
 
-    def backtests(self, limit: int = 20) -> list[BacktestRunRow]:
+    def backtests(self, limit: int = 1000) -> list[BacktestRunRow]:
         with self.db.session() as s:
             return list(s.execute(select(BacktestRunRow).order_by(BacktestRunRow.id.desc())
                                   .limit(limit)).scalars().all())
+
+    def backtest(self, run_id: int) -> BacktestRunRow | None:
+        with self.db.session() as s:
+            return s.get(BacktestRunRow, run_id)
+
+    def delete_backtest(self, run_id: int) -> bool:
+        with self.db.session() as s:
+            row = s.get(BacktestRunRow, run_id)
+            if row is None:
+                return False
+            s.delete(row)
+            return True

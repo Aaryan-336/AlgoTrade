@@ -123,3 +123,19 @@ def test_strategy_versions_lock_live_version_during_market_hours() -> None:
         assert c.get("/api/status", headers=H).json()["config_version"] == 2
         assert c.delete(f"/api/profiles/{default['id']}", headers=H).status_code == 200
         assert c.delete(f"/api/profiles/{new_id}", headers=H).status_code == 409  # live
+
+
+def test_backtest_history_list_detail_delete() -> None:
+    from datetime import UTC, datetime
+
+    with client(ManualClock(NOW)) as c:
+        rt = c.app.state.rt  # type: ignore[attr-defined]
+        rid = rt.repo.save_backtest(datetime.now(UTC), {"version_name": "Slow momentum"},
+                                    {"total_return_pct": 12.5}, [{"date": "2020-01-01",
+                                                                  "equity": 1.0}], [])
+        listing = c.get("/api/backtests", headers=H).json()
+        assert listing[0]["id"] == rid and "equity_curve" not in listing[0]
+        detail = c.get(f"/api/backtests/{rid}", headers=H).json()
+        assert detail["equity_curve"] and detail["params"]["version_name"] == "Slow momentum"
+        assert c.delete(f"/api/backtests/{rid}", headers=H).status_code == 200
+        assert c.get(f"/api/backtests/{rid}", headers=H).status_code == 404

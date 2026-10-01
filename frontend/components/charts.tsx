@@ -7,6 +7,7 @@ import {
   createChart,
   createSeriesMarkers,
   HistogramSeries,
+  LineSeries,
   LineStyle,
   type IChartApi,
   type SeriesMarker,
@@ -150,5 +151,74 @@ export function CandleChart({
     chart.timeScale().fitContent();
     return () => chart.remove();
   }, [bars, fills, stop, target, entry, height, theme]);
+  return <div ref={ref} style={{ height }} className="w-full" />;
+}
+
+/** Categorical series colors, validated for colour-blind separation in both
+ * themes (dataviz palette slots 1-4). Assigned by position in the comparison,
+ * never cycled: at most 4 runs are compared at once. */
+export const SERIES_COLORS = {
+  light: ["#2a78d6", "#eb6834", "#1baf7a", "#eda100"],
+  dark: ["#3987e5", "#d95926", "#199e70", "#c98500"],
+};
+
+export function seriesColor(i: number): string {
+  const dark = typeof window !== "undefined" && window.matchMedia("(prefers-color-scheme: dark)").matches;
+  return (dark ? SERIES_COLORS.dark : SERIES_COLORS.light)[i] ?? "#888888";
+}
+
+export type CompareSeries = { label: string; points: { t: number; v: number }[] };
+
+/** Several runs on one axis, each indexed to % return from its own start. */
+export function CompareChart({
+  series,
+  height = 340,
+  onHover,
+}: {
+  series: CompareSeries[];
+  height?: number;
+  onHover?: (values: (number | null)[] | null, t: number | null) => void;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const theme = useThemeKey();
+  useEffect(() => {
+    if (!ref.current || series.length === 0) return;
+    const chart = baseChart(ref.current, height);
+    chart.applyOptions({ rightPriceScale: { borderVisible: false } });
+    const handles = series.map((s, i) => {
+      const line = chart.addSeries(LineSeries, {
+        color: seriesColor(i),
+        lineWidth: 2,
+        priceLineVisible: false,
+        lastValueVisible: true,
+        title: s.label,
+        priceFormat: { type: "custom", formatter: (v: number) => `${v >= 0 ? "+" : ""}${v.toFixed(1)}%` },
+      });
+      const seen = new Set<number>();
+      line.setData(
+        s.points
+          .filter((p) => (seen.has(p.t) ? false : (seen.add(p.t), true)))
+          .map((p) => ({ time: p.t as UTCTimestamp, value: p.v })),
+      );
+      return line;
+    });
+    handles[0]?.createPriceLine({ price: 0, color: token("--border-strong"), lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: false, title: "" });
+    chart.subscribeCrosshairMove((param) => {
+      if (!onHover) return;
+      if (!param.time) {
+        onHover(null, null);
+        return;
+      }
+      onHover(
+        handles.map((h) => {
+          const d = param.seriesData.get(h) as { value?: number } | undefined;
+          return d?.value ?? null;
+        }),
+        param.time as number,
+      );
+    });
+    chart.timeScale().fitContent();
+    return () => chart.remove();
+  }, [series, height, theme, onHover]);
   return <div ref={ref} style={{ height }} className="w-full" />;
 }

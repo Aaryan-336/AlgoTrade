@@ -8,7 +8,7 @@ import { EquityChart } from "@/components/charts";
 import { Badge, Button, Card, Empty, ErrorNote, PageHeader, Stat } from "@/components/ui";
 import { api, post } from "@/lib/api";
 import { day, humanize, money, pct, signedMoney, tone } from "@/lib/format";
-import type { BacktestResult, ProfilesResponse, UniverseRow } from "@/lib/types";
+import type { BacktestResult, BacktestSummary, ProfilesResponse, UniverseRow } from "@/lib/types";
 
 const today = new Date();
 const iso = (d: Date) => d.toISOString().slice(0, 10);
@@ -46,7 +46,7 @@ function Backtest() {
   const params = useSearchParams();
   const qc = useQueryClient();
   const universe = useQuery({ queryKey: ["universe"], queryFn: () => api<UniverseRow[]>("/api/universe") });
-  const history = useQuery({ queryKey: ["backtests"], queryFn: () => api<BacktestResult[]>("/api/backtests") });
+  const history = useQuery({ queryKey: ["backtests"], queryFn: () => api<BacktestSummary[]>("/api/backtests?limit=5") });
   const [start, setStart] = useState(yearsAgo(2));
   const [end, setEnd] = useState(iso(today));
   const [capital, setCapital] = useState("");
@@ -71,10 +71,19 @@ function Backtest() {
       }),
     onSuccess: (r) => {
       setSelected(r);
+      setViewId(r.id);
       qc.invalidateQueries({ queryKey: ["backtests"] });
     },
   });
-  const shown = selected ?? history.data?.[0] ?? null;
+  // Which saved run to show: one just run, one picked from history (?run=ID), else the latest.
+  const [viewId, setViewId] = useState<number | null>(null);
+  const runId = viewId ?? (Number(params.get("run")) || history.data?.[0]?.id || null);
+  const detail = useQuery({
+    queryKey: ["backtest", runId],
+    queryFn: () => api<BacktestResult>(`/api/backtests/${runId}`),
+    enabled: !!runId && selected?.id !== runId,
+  });
+  const shown = selected && selected.id === runId ? selected : (detail.data ?? null);
   const points = useMemo(
     () => (shown?.equity_curve ?? []).map((p) => ({ t: Math.floor(new Date(p.date).getTime() / 1000), v: p.equity })),
     [shown],
@@ -147,6 +156,13 @@ function Backtest() {
             title={`${day(shown.params.start)} → ${day(shown.params.end)} · ${shown.params.symbols.length} symbols · ${money(shown.params.capital, 0)} · ${shown.params.version_name ?? (shown.params.config_version === "draft" ? "unsaved edits" : `config v${shown.params.config_version ?? "?"}`)}`}
             action={shown.params.failed?.length ? <Badge tone="warn">{shown.params.failed.length} symbols had no data</Badge> : undefined}
           >
+            {((shown.metrics.breakers_tripped as string[] | undefined) ?? []).length > 0 && (
+              <div className="mb-4 rounded-lg border border-warn/30 bg-warn-soft px-3 py-2 text-[13px] text-warn">
+                A circuit breaker tripped ({((shown.metrics.breakers_tripped as string[]) ?? []).map(humanize).join(", ")}), so the
+                strategy stopped trading for the rest of this run, exactly as it would live until you review and reset it. A flat
+                equity line after that point means “halted”, not “nothing happened”.
+              </div>
+            )}
             <Metrics r={shown} />
             <div className="mt-5">{points.length > 1 && <EquityChart points={points} height={260} />}</div>
             {shown.rejections && Object.keys(shown.rejections).length > 0 && (
@@ -193,19 +209,24 @@ function Backtest() {
         <Card><Empty>No backtests yet. Connect Upstox, then run one above.</Empty></Card>
       )}
 
-      {(history.data?.length ?? 0) > 1 && (
-        <Card title="Previous runs" pad={false}>
+      {(history.data?.length ?? 0) > 0 && (
+        <Card
+          title="Recent runs"
+          pad={false}
+          action={<Link href="/backtests" className="text-xs text-accent">All backtests →</Link>}
+        >
           <table className="data">
-            <thead><tr><th>Run</th><th>Window</th><th className="r">Return</th><th className="r">Max DD</th><th className="r">Trades</th><th /></tr></thead>
+            <thead><tr><th>Run</th><th>Version</th><th>Window</th><th className="r">Return</th><th className="r">Max DD</th><th className="r">Trades</th><th /></tr></thead>
             <tbody>
               {history.data!.map((h) => (
-                <tr key={h.id}>
+                <tr key={h.id} className={h.id === runId ? "bg-surface-2" : ""}>
                   <td className="num">#{h.id}</td>
+                  <td>{h.params.version_name ?? "—"}</td>
                   <td className="text-ink-2">{day(h.params.start)} → {day(h.params.end)}</td>
                   <td className={`r num ${tone(h.metrics.total_return_pct as number)}`}>{pct(h.metrics.total_return_pct as number, 2, true)}</td>
                   <td className="r num">{pct(h.metrics.max_drawdown_pct as number)}</td>
                   <td className="r num">{String(h.metrics.trades)}</td>
-                  <td className="r"><Button variant="ghost" onClick={() => setSelected(h)}>View</Button></td>
+                  <td className="r"><Button variant="ghost" onClick={() => { setSelected(null); setViewId(h.id); }}>View</Button></td>
                 </tr>
               ))}
             </tbody>

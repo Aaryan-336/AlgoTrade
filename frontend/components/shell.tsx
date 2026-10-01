@@ -16,6 +16,8 @@ const NAV = [
   { href: "/news", label: "News & sentiment" },
   { href: "/risk", label: "Risk" },
   { href: "/backtest", label: "Backtest" },
+  { href: "/backtests", label: "Backtest history" },
+  { href: "/compare", label: "Compare strategies" },
   { href: "/settings", label: "Settings" },
 ];
 
@@ -87,7 +89,7 @@ export function Shell({ children }: { children: ReactNode }) {
         >
           <ul className="space-y-0.5">
             {NAV.map((n) => {
-              const active = n.href === "/" ? path === "/" : path.startsWith(n.href);
+              const active = path === n.href || (n.href !== "/" && path.startsWith(`${n.href}/`));
               return (
                 <li key={n.href}>
                   <Link
