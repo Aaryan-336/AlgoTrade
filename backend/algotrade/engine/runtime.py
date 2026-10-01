@@ -47,6 +47,7 @@ class Runtime:
             settings.upstox_api_secret.get_secret_value() if settings.upstox_api_secret else None,
             settings.upstox_redirect_uri)
         self.config_version, self.config = self._load_or_seed_config()
+        self._seed_profiles()
         self.universe = Universe.from_config(self.config.strategy.universe)
         self.provider: MarketDataProvider = provider or self._make_provider()
         # While Upstox is not logged in (or the account is not active yet), daily
@@ -69,6 +70,72 @@ class Runtime:
         cfg = default_config()
         v = self.repo.save_config(cfg, self.clock.now(), "system", "initial defaults")
         return v, cfg
+
+    def _seed_profiles(self) -> None:
+        """First run: the current config becomes the 'Default' version, marked live."""
+        if self.repo.profiles():
+            return
+        now = self.clock.now()
+        pid = self.repo.save_profile("Default", "Starting configuration", self.config, now)
+        self._mark_live(pid, "Default", now)
+
+    def _mark_live(self, profile_id: int, name: str, now: datetime) -> None:
+        self.repo.set_state("live_profile", {"id": profile_id, "name": name,
+                                             "fingerprint": self.config.fingerprint()}, now)
+
+    # ------------------------------------------------------------ versions
+    def live_profile_id(self) -> int | None:
+        st = self.repo.get_state("live_profile") or {}
+        return int(st["id"]) if st.get("id") else None
+
+    @staticmethod
+    def profile_config(row: Any) -> AppConfig:
+        from algotrade.config.models import RiskConfig, StrategyConfig
+
+        return AppConfig(risk=RiskConfig.model_validate(row.risk),
+                         strategy=StrategyConfig.model_validate(row.strategy))
+
+    def save_profile(self, name: str, description: str, cfg: AppConfig, now: datetime,
+                     profile_id: int | None = None) -> int:
+        """Create or update a strategy version. The live version is frozen during
+        market hours; editing it after the close makes the edit live too."""
+        name = name.strip()
+        if not name:
+            raise ValueError("version name is required")
+        clash = self.repo.profile_by_name(name)
+        if clash is not None and clash.id != profile_id:
+            raise ValueError(f"a version named '{name}' already exists")
+        is_live = profile_id is not None and profile_id == self.live_profile_id()
+        if is_live and self.calendar.is_open(now):
+            raise PermissionError("the live version can't be changed during market hours")
+        if profile_id is not None and self.repo.profile(profile_id) is None:
+            raise LookupError("version not found")
+        pid = self.repo.save_profile(name, description, cfg, now, profile_id)
+        self.audit.record(now, "owner", "profile.saved", {"id": pid, "name": name,
+                                                          "fingerprint": cfg.fingerprint()})
+        if is_live:
+            self.activate_profile(pid, now, reason=f"edited live version '{name}'")
+        return pid
+
+    def delete_profile(self, profile_id: int, now: datetime) -> None:
+        if profile_id == self.live_profile_id():
+            raise PermissionError("make another version live before deleting this one")
+        if not self.repo.delete_profile(profile_id):
+            raise LookupError("version not found")
+        self.audit.record(now, "owner", "profile.deleted", {"id": profile_id})
+
+    def activate_profile(self, profile_id: int, now: datetime, reason: str = "") -> int:
+        """Make a version the live trading config (outside market hours only)."""
+        row = self.repo.profile(profile_id)
+        if row is None:
+            raise LookupError("version not found")
+        cfg = self.profile_config(row)
+        version = self.save_config(cfg, reason or f"activated version '{row.name}'", now)
+        self.repo.set_state("live_profile", {"id": row.id, "name": row.name,
+                                             "fingerprint": cfg.fingerprint(),
+                                             "config_version": version}, now)
+        self.reload_config()
+        return version
 
     def _make_provider(self) -> MarketDataProvider:
         idx = self.universe.indices

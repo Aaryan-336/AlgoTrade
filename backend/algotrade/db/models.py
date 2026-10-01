@@ -251,3 +251,16 @@ class BacktestRunRow(Base):
     metrics: Mapped[dict[str, Any]] = mapped_column(JSON)
     equity_curve: Mapped[list[Any]] = mapped_column(JSON)
     trades: Mapped[list[Any]] = mapped_column(JSON)
+
+
+class StrategyProfileRow(Base):
+    """A named, saved strategy + risk version that can be backtested and made live."""
+
+    __tablename__ = "strategy_profiles"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(64), unique=True)
+    description: Mapped[str] = mapped_column(Text, default="")
+    risk: Mapped[dict[str, Any]] = mapped_column(JSON)
+    strategy: Mapped[dict[str, Any]] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(TS)
+    updated_at: Mapped[datetime] = mapped_column(TS)

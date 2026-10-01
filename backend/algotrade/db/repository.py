@@ -26,6 +26,7 @@ from algotrade.db.models import (
     RiskEventRow,
     SentimentRow,
     SignalRow,
+    StrategyProfileRow,
     SystemStateRow,
 )
 from algotrade.db.session import Database
@@ -83,6 +84,47 @@ class Repository:
                              .limit(limit)).scalars()
             return [{"version": r.version, "ts": r.ts, "fingerprint": r.fingerprint,
                      "changed_by": r.changed_by, "reason": r.reason} for r in rows]
+
+    # ------------------------------------------------------------- profiles
+    def profiles(self) -> list[StrategyProfileRow]:
+        with self.db.session() as s:
+            return list(s.execute(select(StrategyProfileRow).order_by(StrategyProfileRow.id))
+                        .scalars().all())
+
+    def profile(self, profile_id: int) -> StrategyProfileRow | None:
+        with self.db.session() as s:
+            return s.get(StrategyProfileRow, profile_id)
+
+    def profile_by_name(self, name: str) -> StrategyProfileRow | None:
+        with self.db.session() as s:
+            return s.execute(select(StrategyProfileRow).where(StrategyProfileRow.name == name)
+                             ).scalar_one_or_none()
+
+    def save_profile(self, name: str, description: str, cfg: AppConfig, ts: datetime,
+                     profile_id: int | None = None) -> int:
+        with self.db.session() as s:
+            row = s.get(StrategyProfileRow, profile_id) if profile_id else None
+            if row is None:
+                row = StrategyProfileRow(name=name, description=description,
+                                         risk=cfg.risk.model_dump(mode="json"),
+                                         strategy=cfg.strategy.model_dump(mode="json"),
+                                         created_at=ts, updated_at=ts)
+                s.add(row)
+            else:
+                row.name, row.description = name, description
+                row.risk = cfg.risk.model_dump(mode="json")
+                row.strategy = cfg.strategy.model_dump(mode="json")
+                row.updated_at = ts
+            s.flush()
+            return row.id
+
+    def delete_profile(self, profile_id: int) -> bool:
+        with self.db.session() as s:
+            row = s.get(StrategyProfileRow, profile_id)
+            if row is None:
+                return False
+            s.delete(row)
+            return True
 
     # ----------------------------------------------------------------- bars
     def upsert_bars(self, bars: Iterable[Bar]) -> int:

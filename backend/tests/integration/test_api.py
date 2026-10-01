@@ -90,3 +90,36 @@ def test_backtest_accepts_unsaved_settings_during_market_hours() -> None:
         assert c.post("/api/backtest", json=ok, headers=H).status_code == 502
         # The live config is untouched.
         assert c.get("/api/config", headers=H).json()["latest_version"] == 1
+
+
+def test_strategy_versions_lock_live_version_during_market_hours() -> None:
+    clock = ManualClock(NOW)  # 11:00 IST, market open
+    with client(clock) as c:
+        view = c.get("/api/profiles", headers=H).json()
+        assert view["market_open"] and len(view["profiles"]) == 1
+        default = view["profiles"][0]
+        assert default["name"] == "Default" and default["is_live"]
+        body = {"name": "Slow momentum", "description": "test",
+                "risk": default["risk"], "strategy": default["strategy"]}
+        # Creating and editing a non-live version is fine while the market is open.
+        new_id = c.post("/api/profiles", json=body, headers=H).json()["id"]
+        assert c.put(f"/api/profiles/{new_id}", json={**body, "description": "v2"},
+                     headers=H).status_code == 200
+        assert c.post("/api/profiles", json=body, headers=H).status_code == 422  # dup name
+        # The live version and the live switch are frozen.
+        live_body = {**body, "name": "Default"}
+        assert c.put(f"/api/profiles/{default['id']}", json=live_body,
+                     headers=H).status_code == 409
+        assert c.post(f"/api/profiles/{new_id}/activate", headers=H).status_code == 409
+        assert c.delete(f"/api/profiles/{default['id']}", headers=H).status_code == 409
+        # Backtesting any version is allowed (fails only for lack of data here).
+        r = c.post("/api/backtest", json={"start": "2025-01-01", "end": "2025-06-01",
+                                          "profile_id": new_id}, headers=H)
+        assert r.status_code == 502
+        # After the close: switch live version, then the old one can be deleted.
+        clock.set(ist(SESSION_DAY, 18, 0))
+        r = c.post(f"/api/profiles/{new_id}/activate", headers=H)
+        assert r.status_code == 200 and r.json()["live_id"] == new_id
+        assert c.get("/api/status", headers=H).json()["config_version"] == 2
+        assert c.delete(f"/api/profiles/{default['id']}", headers=H).status_code == 200
+        assert c.delete(f"/api/profiles/{new_id}", headers=H).status_code == 409  # live

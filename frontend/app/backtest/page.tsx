@@ -2,13 +2,13 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
+import { Suspense, useEffect, useMemo, useState } from "react";
 import { EquityChart } from "@/components/charts";
 import { Badge, Button, Card, Empty, ErrorNote, PageHeader, Stat } from "@/components/ui";
 import { api, post } from "@/lib/api";
-import { loadDraft, type Draft } from "@/lib/draft";
 import { day, humanize, money, pct, signedMoney, tone } from "@/lib/format";
-import type { BacktestResult, UniverseRow } from "@/lib/types";
+import type { BacktestResult, ProfilesResponse, UniverseRow } from "@/lib/types";
 
 const today = new Date();
 const iso = (d: Date) => d.toISOString().slice(0, 10);
@@ -28,7 +28,16 @@ function Metrics({ r }: { r: BacktestResult }) {
   );
 }
 
-export default function Backtest() {
+export default function BacktestPage() {
+  return (
+    <Suspense fallback={<Empty>Loading…</Empty>}>
+      <Backtest />
+    </Suspense>
+  );
+}
+
+function Backtest() {
+  const params = useSearchParams();
   const qc = useQueryClient();
   const universe = useQuery({ queryKey: ["universe"], queryFn: () => api<UniverseRow[]>("/api/universe") });
   const history = useQuery({ queryKey: ["backtests"], queryFn: () => api<BacktestResult[]>("/api/backtests") });
@@ -37,13 +46,13 @@ export default function Backtest() {
   const [capital, setCapital] = useState("");
   const [symbols, setSymbols] = useState<string[]>([]);
   const [selected, setSelected] = useState<BacktestResult | null>(null);
-  const [draft, setDraft] = useState<Draft | null>(null);
-  const [useDraft, setUseDraft] = useState(false);
+  const versions = useQuery({ queryKey: ["profiles"], queryFn: () => api<ProfilesResponse>("/api/profiles") });
+  const [versionId, setVersionId] = useState<number | null>(null);
   useEffect(() => {
-    const d = loadDraft();
-    setDraft(d);
-    setUseDraft(!!d);
-  }, []);
+    if (versionId !== null || !versions.data) return;
+    const fromUrl = Number(params.get("version"));
+    setVersionId(fromUrl || versions.data.live_id || versions.data.profiles[0]?.id || null);
+  }, [versions.data, versionId, params]);
 
   const run = useMutation({
     mutationFn: () =>
@@ -52,7 +61,7 @@ export default function Backtest() {
         end,
         symbols,
         capital: capital ? Number(capital) : undefined,
-        ...(useDraft && draft ? { risk: draft.risk, strategy: draft.strategy } : {}),
+        ...(versionId ? { profile_id: versionId } : {}),
       }),
     onSuccess: (r) => {
       setSelected(r);
@@ -73,24 +82,20 @@ export default function Backtest() {
       />
       <Card
         title="Run"
-        action={
-          draft ? (
-            <div className="flex rounded-lg border border-line-strong p-0.5 text-[12px]">
-              {([false, true] as const).map((v) => (
-                <button
-                  key={String(v)}
-                  onClick={() => setUseDraft(v)}
-                  className={`rounded-md px-2.5 py-1 ${useDraft === v ? "bg-surface-2 font-semibold" : "text-muted"}`}
-                >
-                  {v ? "Edited settings (unsaved)" : "Live config"}
-                </button>
-              ))}
-            </div>
-          ) : (
-            <Link href="/settings" className="text-xs text-accent">Edit strategy settings →</Link>
-          )
-        }
+        action={<Link href="/settings" className="text-xs text-accent">Manage versions →</Link>}
       >
+        <label className="mb-4 block">
+          <span className="label">Strategy version</span>
+          <select className="mt-1 w-full md:w-[420px]" value={versionId ?? ""} onChange={(e) => setVersionId(Number(e.target.value))}>
+            {(versions.data?.profiles ?? []).map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name}
+                {p.is_live ? " (live)" : ""}
+                {p.description ? ` · ${p.description}` : ""}
+              </option>
+            ))}
+          </select>
+        </label>
         <div className="grid gap-4 md:grid-cols-4">
           <label className="block">
             <span className="label">From</span>
@@ -133,7 +138,7 @@ export default function Backtest() {
       {shown ? (
         <>
           <Card
-            title={`${day(shown.params.start)} → ${day(shown.params.end)} · ${shown.params.symbols.length} symbols · ${money(shown.params.capital, 0)} · ${shown.params.config_version === "draft" ? "edited settings" : `config v${shown.params.config_version ?? "?"}`}`}
+            title={`${day(shown.params.start)} → ${day(shown.params.end)} · ${shown.params.symbols.length} symbols · ${money(shown.params.capital, 0)} · ${shown.params.version_name ?? (shown.params.config_version === "draft" ? "unsaved edits" : `config v${shown.params.config_version ?? "?"}`)}`}
             action={shown.params.failed?.length ? <Badge tone="warn">{shown.params.failed.length} symbols had no data</Badge> : undefined}
           >
             <Metrics r={shown} />

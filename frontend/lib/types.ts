@@ -189,9 +189,24 @@ export type BacktestResult = {
     capital: number;
     failed?: string[];
     config_version?: number | string;
+    version_name?: string;
   };
   metrics: Record<string, number | string | null | string[]>;
   equity_curve: { date: string; equity: number }[];
   trades: Trade[];
   rejections?: Record<string, number>;
 };
+
+export type Profile = {
+  id: number;
+  name: string;
+  description: string;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- validated server-side
+  risk: Record<string, any>;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- validated server-side
+  strategy: Record<string, any>;
+  updated_at: string;
+  is_live: boolean;
+};
+
+export type ProfilesResponse = { market_open: boolean; live_id: number | null; profiles: Profile[] };

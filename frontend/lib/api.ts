@@ -64,3 +64,5 @@ export function wsUrl(): string {
   const token = getToken();
   return `${base}/ws${token ? `?token=${encodeURIComponent(token)}` : ""}`;
 }
+
+export const del = <T,>(path: string) => api<T>(path, { method: "DELETE" });

@@ -4,23 +4,20 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
 import { useEffect, useState, type ReactNode } from "react";
 import { Badge, Button, Card, ErrorNote, PageHeader } from "@/components/ui";
-import { API_URL, api, getToken, post, put, setToken } from "@/lib/api";
+import { API_URL, api, del, getToken, post, put, setToken } from "@/lib/api";
 import { when } from "@/lib/format";
-import { clearDraft, loadDraft, saveDraft } from "@/lib/draft";
 import { useLive } from "@/lib/live";
+import type { Profile, ProfilesResponse } from "@/lib/types";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- config is a validated server-side schema
 type Json = Record<string, any>;
 type ConfigResponse = {
   active_version: number;
-  latest_version: number;
-  pending_activation: boolean;
-  risk: Json;
-  strategy: Json;
   history: { version: number; ts: string; changed_by: string; reason: string }[];
   market_open: boolean;
   universe_all: { symbol: string; name: string; sector: string }[];
 };
+type Editing = { id: number | null; name: string; description: string; risk: Json; strategy: Json };
 
 function get(obj: Json, path: string): unknown {
   return path.split(".").reduce<unknown>((o, k) => (o as Json)?.[k], obj);
@@ -44,24 +41,44 @@ function Field({ label, hint, children }: { label: string; hint?: string; childr
   );
 }
 
+const fromProfile = (p: Profile): Editing => ({
+  id: p.id,
+  name: p.name,
+  description: p.description,
+  risk: p.risk,
+  strategy: p.strategy,
+});
+
 export default function Settings() {
   const { status } = useLive();
   const qc = useQueryClient();
   const router = useRouter();
   const cfg = useQuery({ queryKey: ["config"], queryFn: () => api<ConfigResponse>("/api/config") });
-  const [draft, setDraft] = useState<{ risk: Json; strategy: Json } | null>(null);
-  const [reason, setReason] = useState("");
+  const versions = useQuery({ queryKey: ["profiles"], queryFn: () => api<ProfilesResponse>("/api/profiles"), refetchInterval: 30_000 });
+  const [edit, setEdit] = useState<Editing | null>(null);
+  const [dirty, setDirty] = useState(false);
   const [err, setErr] = useState<unknown>(null);
-  const [saved, setSaved] = useState("");
+  const [note, setNote] = useState("");
   const [token, setTokenInput] = useState("");
 
   useEffect(() => {
-    if (cfg.data && !draft) setDraft(loadDraft() ?? { risk: cfg.data.risk, strategy: cfg.data.strategy });
-  }, [cfg.data, draft]);
+    if (versions.data && !edit) {
+      const live = versions.data.profiles.find((p) => p.is_live) ?? versions.data.profiles[0];
+      if (live) setEdit(fromProfile(live));
+    }
+  }, [versions.data, edit]);
   useEffect(() => setTokenInput(getToken()), []);
 
-  if (!cfg.data || !draft) return <div className="text-sm text-muted">Loading settings…</div>;
-  const locked = cfg.data.market_open;
+  if (!cfg.data || !versions.data || !edit) return <div className="text-sm text-muted">Loading settings…</div>;
+  const marketOpen = versions.data.market_open;
+  const selected = versions.data.profiles.find((p) => p.id === edit.id) ?? null;
+  const isLive = !!selected?.is_live;
+  const frozen = isLive && marketOpen;
+  const draft = edit;
+  const setDraft = (d: { risk: Json; strategy: Json }) => {
+    setEdit({ ...edit, risk: d.risk, strategy: d.strategy });
+    setDirty(true);
+  };
 
   const num = (section: "risk" | "strategy", path: string, step = "any") => (
     <input
@@ -84,26 +101,60 @@ export default function Settings() {
   );
   const watch: string[] = draft.strategy.universe.symbols ?? [];
 
-  async function save() {
+  async function act(fn: () => Promise<unknown>, msg: string) {
     setErr(null);
-    setSaved("");
+    setNote("");
     try {
-      const r = await put<{ version: number; note: string }>("/api/config", { ...draft, reason });
-      setSaved(`Saved as version ${r.version}. ${r.note}`);
-      clearDraft();
-      setReason("");
-      qc.invalidateQueries();
+      await fn();
+      setNote(msg);
+      await qc.invalidateQueries();
     } catch (e) {
       setErr(e);
     }
+  }
+  const cur: Editing = edit;
+  const body = () => ({ name: cur.name, description: cur.description, risk: cur.risk, strategy: cur.strategy });
+
+  async function saveVersion() {
+    await act(async () => {
+      await put(`/api/profiles/${cur.id}`, body());
+      setDirty(false);
+    }, isLive ? "Saved. The live config was updated too." : "Saved.");
+  }
+  async function saveAsNew() {
+    const name = window.prompt("Name for the new version", `${cur.name} copy`);
+    if (!name) return;
+    await act(async () => {
+      const r = await post<{ id: number }>("/api/profiles", { ...body(), name });
+      setEdit({ ...cur, id: r.id, name });
+      setDirty(false);
+    }, `Created "${name}".`);
+  }
+  async function makeLive() {
+    if (!cur.id || !window.confirm(`Make "${cur.name}" the live paper-trading version?`)) return;
+    await act(() => post(`/api/profiles/${cur.id}/activate`), `"${cur.name}" is now live.`);
+  }
+  async function remove() {
+    if (!cur.id || !window.confirm(`Delete "${cur.name}"? Backtest history is kept.`)) return;
+    await act(async () => {
+      await del(`/api/profiles/${cur.id}`);
+      setEdit(null);
+    }, "Deleted.");
+  }
+  function backtest() {
+    router.push(`/backtest?version=${cur.id}`);
   }
 
   return (
     <div className="space-y-5">
       <PageHeader
         title="Settings"
-        sub="Every change is saved as a new config version with your reason. Changes are refused during market hours (09:15–15:30 IST)."
-        action={<Badge tone={locked ? "warn" : "pos"} dot>{locked ? "Live config locked until 15:30 · edit and backtest freely" : "Editable"}</Badge>}
+        sub="Save strategies as named versions, backtest any of them, and choose which one paper-trades live."
+        action={
+          <Badge tone={marketOpen ? "warn" : "pos"} dot>
+            {marketOpen ? "Market open · live version frozen until 15:30" : "Market closed · all versions editable"}
+          </Badge>
+        }
       />
 
       <Card title="Connections">
@@ -142,7 +193,69 @@ export default function Settings() {
         </div>
       </Card>
 
-      <fieldset className="space-y-5">
+      <Card title="Strategy versions" pad={false}>
+        <ul className="divide-y divide-line">
+          {versions.data.profiles.map((p) => (
+            <li key={p.id}>
+              <button
+                onClick={() => {
+                  if (dirty && !window.confirm("Discard unsaved changes?")) return;
+                  setEdit(fromProfile(p));
+                  setDirty(false);
+                  setErr(null);
+                  setNote("");
+                }}
+                className={`flex w-full flex-wrap items-center gap-x-3 gap-y-1 px-4 py-3 text-left hover:bg-surface-2 ${p.id === edit.id ? "bg-surface-2" : ""}`}
+              >
+                <span className="text-[13px] font-semibold">{p.name}</span>
+                {p.is_live && <Badge tone="pos" dot>Live</Badge>}
+                {p.id === edit.id && <Badge tone="accent">Editing</Badge>}
+                <span className="min-w-0 flex-1 truncate text-[12px] text-muted">{p.description}</span>
+                <span className="text-[11px] text-muted">updated {when(p.updated_at)}</span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      </Card>
+
+      <Card
+        title={
+          <span className="flex items-center gap-2">
+            Editing: {edit.name} {isLive && <Badge tone="pos" dot>Live</Badge>} {dirty && <Badge tone="warn">Unsaved</Badge>}
+          </span>
+        }
+      >
+        {frozen && (
+          <div className="mb-4 rounded-lg border border-warn/30 bg-warn-soft px-3 py-2 text-[13px] text-warn">
+            This is the live version and the market is open, so it can't be changed until 15:30 IST. You can still backtest
+            it, or use “Save as new version” to experiment on a copy.
+          </div>
+        )}
+        <div className="grid gap-4 md:grid-cols-2">
+          <Field label="Version name">
+            <input className="w-full" disabled={frozen} value={edit.name} onChange={(e) => { setEdit({ ...edit, name: e.target.value }); setDirty(true); }} />
+          </Field>
+          <Field label="Description" hint="What's different about this version">
+            <input className="w-full" disabled={frozen} value={edit.description} onChange={(e) => { setEdit({ ...edit, description: e.target.value }); setDirty(true); }} />
+          </Field>
+        </div>
+        <div className="mt-4 flex flex-wrap gap-2">
+          <Button variant="primary" disabled={frozen || !dirty || !edit.id} onClick={saveVersion}>Save</Button>
+          <Button onClick={saveAsNew}>Save as new version</Button>
+          <Button onClick={backtest} disabled={dirty} title={dirty ? "Save first, then backtest" : undefined}>Backtest this version</Button>
+          <Button onClick={makeLive} disabled={isLive || marketOpen || dirty} title={marketOpen ? "Only outside market hours" : undefined}>
+            Make live
+          </Button>
+          <Button variant="ghost" onClick={remove} disabled={isLive}>Delete</Button>
+        </div>
+        <div className="mt-3 space-y-2">
+          <ErrorNote error={err} />
+          {note && <div className="text-[13px] text-pos">{note}</div>}
+          {marketOpen && !isLive && <div className="text-[12px] text-muted">“Make live” unlocks after 15:30 IST.</div>}
+        </div>
+      </Card>
+
+      <fieldset disabled={frozen} className="space-y-5 disabled:opacity-60">
         <Card title="Capital and trading style">
           <div className="grid gap-5 md:grid-cols-3">
             <Field label="Paper capital (₹)" hint="Starting cash for the paper account">{num("strategy", "capital", "1000")}</Field>
@@ -263,34 +376,7 @@ export default function Settings() {
         </Card>
       </fieldset>
 
-      <Card>
-        <div className="flex flex-col gap-3 md:flex-row md:items-end">
-          <Field label="Reason for this change" hint="Stored with the new config version">
-            <input className="w-full md:w-[420px]" value={reason} onChange={(e) => setReason(e.target.value)} />
-          </Field>
-          <div className="flex gap-2">
-            <Button variant="primary" disabled={locked || reason.trim().length < 3} onClick={save}>Save new version</Button>
-            <Button
-              onClick={() => {
-                saveDraft(draft);
-                router.push("/backtest?draft=1");
-              }}
-            >
-              Backtest these settings
-            </Button>
-            <Button variant="ghost" onClick={() => { clearDraft(); setDraft({ risk: cfg.data!.risk, strategy: cfg.data!.strategy }); }}>Discard</Button>
-          </div>
-        </div>
-        <div className="mt-3 space-y-2">
-          <ErrorNote error={err} />
-          {saved && <div className="text-[13px] text-pos">{saved}</div>}
-          {cfg.data.pending_activation && (
-            <div className="text-[13px] text-warn">Version {cfg.data.latest_version} is saved and activates when the engine next reloads (outside market hours).</div>
-          )}
-        </div>
-      </Card>
-
-      <Card title="Version history" pad={false}>
+      <Card title="Live config history" pad={false}>
         <table className="data">
           <thead><tr><th>Version</th><th>When</th><th>By</th><th>Reason</th></tr></thead>
           <tbody>

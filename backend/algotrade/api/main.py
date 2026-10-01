@@ -67,6 +67,13 @@ class ConfigRequest(BaseModel):
     reason: str = Field(min_length=3, max_length=300)
 
 
+class ProfileRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=64)
+    description: str = Field(default="", max_length=500)
+    risk: dict[str, Any]
+    strategy: dict[str, Any]
+
+
 class BacktestRequest(BaseModel):
     symbols: list[str] = Field(default_factory=list, max_length=60)
     start: date
@@ -76,6 +83,7 @@ class BacktestRequest(BaseModel):
     # never touch the live config, so they are allowed during market hours.
     risk: dict[str, Any] | None = None
     strategy: dict[str, Any] | None = None
+    profile_id: int | None = None  # backtest a saved strategy version
 
 
 def create_app(settings: Settings | None = None, runtime: Runtime | None = None,
@@ -100,7 +108,7 @@ def create_app(settings: Settings | None = None, runtime: Runtime | None = None,
 
     app = FastAPI(title="AlgoTrade (paper)", lifespan=lifespan)
     app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origins,
-                       allow_methods=["GET", "POST", "PUT"], allow_headers=["*"])
+                       allow_methods=["GET", "POST", "PUT", "DELETE"], allow_headers=["*"])
 
     def auth(request: Request) -> None:
         if settings.api_token is None:
@@ -402,6 +410,68 @@ def create_app(settings: Settings | None = None, runtime: Runtime | None = None,
         return {"version": v, "note": "Takes effect when the engine next reloads "
                                       "(immediately if the market is closed)."}
 
+    # ------------------------------------------------- strategy versions
+    def profile_view(rt: Runtime) -> dict[str, Any]:
+        live_id = rt.live_profile_id()
+        rows = rt.repo.profiles()
+        out: dict[str, Any] = j({
+            "market_open": rt.calendar.is_open(rt.clock.now()),
+            "live_id": live_id,
+            "profiles": [{"id": r.id, "name": r.name, "description": r.description,
+                          "risk": r.risk, "strategy": r.strategy, "updated_at": r.updated_at,
+                          "is_live": r.id == live_id} for r in rows],
+        })
+        return out
+
+    def parse_profile(body: ProfileRequest) -> AppConfig:
+        try:
+            return AppConfig(risk=RiskConfig.model_validate(body.risk),
+                             strategy=StrategyConfig.model_validate(body.strategy))
+        except ValueError as exc:
+            raise HTTPException(422, f"invalid settings: {exc}") from exc
+
+    def profile_errors(fn: Any) -> Any:
+        try:
+            return fn()
+        except PermissionError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        except LookupError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+
+    @app.get("/api/profiles", dependencies=guard)
+    async def profiles(request: Request) -> Any:
+        return profile_view(rt_of(request))
+
+    @app.post("/api/profiles", dependencies=guard)
+    async def create_profile(request: Request, body: ProfileRequest) -> Any:
+        rt = rt_of(request)
+        cfg = parse_profile(body)
+        pid = profile_errors(lambda: rt.save_profile(body.name, body.description, cfg,
+                                                     rt.clock.now()))
+        return {"id": pid, **profile_view(rt)}
+
+    @app.put("/api/profiles/{profile_id}", dependencies=guard)
+    async def update_profile(request: Request, profile_id: int, body: ProfileRequest) -> Any:
+        rt = rt_of(request)
+        cfg = parse_profile(body)
+        profile_errors(lambda: rt.save_profile(body.name, body.description, cfg,
+                                               rt.clock.now(), profile_id))
+        return {"id": profile_id, **profile_view(rt)}
+
+    @app.delete("/api/profiles/{profile_id}", dependencies=guard)
+    async def delete_profile(request: Request, profile_id: int) -> Any:
+        rt = rt_of(request)
+        profile_errors(lambda: rt.delete_profile(profile_id, rt.clock.now()))
+        return profile_view(rt)
+
+    @app.post("/api/profiles/{profile_id}/activate", dependencies=guard)
+    async def activate_profile(request: Request, profile_id: int) -> Any:
+        rt = rt_of(request)
+        version = profile_errors(lambda: rt.activate_profile(profile_id, rt.clock.now()))
+        return {"config_version": version, **profile_view(rt)}
+
     # ----------------------------------------------------------- backtest
     @app.post("/api/backtest", dependencies=guard)
     async def backtest(request: Request, body: BacktestRequest) -> Any:
@@ -410,7 +480,15 @@ def create_app(settings: Settings | None = None, runtime: Runtime | None = None,
             raise HTTPException(422, "end must be after start")
         cfg = rt.config
         draft = body.risk is not None and body.strategy is not None
-        if draft:
+        label = f"live config v{rt.config_version}"
+        if body.profile_id is not None:
+            row = rt.repo.profile(body.profile_id)
+            if row is None:
+                raise HTTPException(404, "version not found")
+            cfg = rt.profile_config(row)
+            label = row.name
+        elif draft:
+            label = "unsaved edits"
             try:
                 cfg = AppConfig(risk=RiskConfig.model_validate(body.risk),
                                 strategy=StrategyConfig.model_validate(body.strategy))
@@ -441,6 +519,7 @@ def create_app(settings: Settings | None = None, runtime: Runtime | None = None,
         params = {"symbols": uni.symbols, "start": body.start, "end": body.end,
                   "capital": float(cfg.strategy.capital),
                   "config_version": "draft" if draft else rt.config_version,
+                  "version_name": label,
                   "provider": prov.name, "failed": failed}
         run_id = rt.repo.save_backtest(rt.clock.now(), params, result.metrics,
                                        result.equity_curve, result.trades)
