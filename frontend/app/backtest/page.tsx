@@ -17,8 +17,14 @@ const yearsAgo = (n: number) => iso(new Date(today.getFullYear() - n, today.getM
 function Metrics({ r }: { r: BacktestResult }) {
   const m = r.metrics as Record<string, number | null>;
   return (
-    <div className="grid grid-cols-2 gap-5 md:grid-cols-4 xl:grid-cols-6">
-      <Stat label="Return" value={pct(m.total_return_pct, 2, true)} tone={tone(m.total_return_pct)} sub={`CAGR ${pct(m.cagr_pct)}`} />
+    <div className="grid grid-cols-2 gap-5 md:grid-cols-4 xl:grid-cols-7">
+      <Stat
+        label="Profit / loss"
+        value={signedMoney((m.final_equity ?? 0) - (m.start_equity ?? 0))}
+        tone={tone((m.final_equity ?? 0) - (m.start_equity ?? 0))}
+        sub={`${money(m.start_equity, 0)} → ${money(m.final_equity, 0)}`}
+      />
+      <Stat label="Return" value={pct(m.total_return_pct, 2, true)} tone={tone(m.total_return_pct)} sub={`CAGR ${pct(m.cagr_pct)} a year`} />
       <Stat label="Max drawdown" value={pct(m.max_drawdown_pct)} tone="text-neg" />
       <Stat label="Sharpe" value={(m.sharpe ?? 0).toFixed(2)} sub={`Sortino ${(m.sortino ?? 0).toFixed(2)}`} />
       <Stat label="Trades" value={m.trades ?? 0} sub={`${pct(m.win_rate_pct, 0)} winners`} />
