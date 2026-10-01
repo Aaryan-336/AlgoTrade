@@ -16,7 +16,7 @@ from datetime import datetime, time, timedelta
 from typing import Any
 
 from algotrade.core.clock import IST, to_ist
-from algotrade.data.providers.base import ProviderError
+from algotrade.data.providers.base import MarketDataProvider, ProviderError
 from algotrade.data.providers.upstox import UpstoxProvider
 from algotrade.engine.runtime import Runtime
 
@@ -32,6 +32,9 @@ class LiveRunner:
         self._task: asyncio.Task[None] | None = None
         self._news_task: asyncio.Task[Any] | None = None
         self.history_loaded_for: str = ""
+        self.fallback_loaded_for: str = ""
+        self.history_source: str = ""
+        self._history_task: asyncio.Task[None] | None = None
         self.daily_cycle_done_for: str = ""
         self.last_intraday_bar: datetime | None = None
         self.last_housekeeping: datetime | None = None
@@ -49,7 +52,7 @@ class LiveRunner:
 
     async def stop(self) -> None:
         self.running = False
-        for t in (self._task, self._news_task):
+        for t in (self._task, self._news_task, self._history_task):
             if t:
                 t.cancel()
         self._task = None
@@ -97,6 +100,13 @@ class LiveRunner:
         if ready and cal.is_trading_day(today) and self.history_loaded_for != today.isoformat():
             await self.load_history(now)
             eng = rt.engine
+        elif (not ready and rt.fallback is not None and self.history_loaded_for == ""
+              and self.fallback_loaded_for != today.isoformat()
+              and (self._history_task is None or self._history_task.done())):
+            # Display-only history in the background so the heartbeat keeps ticking.
+            self.fallback_loaded_for = today.isoformat()
+            self._history_task = asyncio.create_task(
+                self.load_history(now, rt.fallback, mark_loaded=False), name="history-fallback")
         if cal.is_trading_day(today) and local.time() >= time(9, 0):
             eng.mark_session(now)
 
@@ -129,9 +139,10 @@ class LiveRunner:
         await rt.notifier.flush()
 
     # ------------------------------------------------------------ history
-    async def load_history(self, now: datetime) -> None:
+    async def load_history(self, now: datetime, prov: MarketDataProvider | None = None,
+                           mark_loaded: bool = True) -> None:
         rt = self.rt
-        prov = rt.provider
+        prov = prov or rt.provider
         if isinstance(prov, UpstoxProvider):
             await prov.load_instruments(rt.universe.symbols)
         end = to_ist(now).date()
@@ -146,8 +157,11 @@ class LiveRunner:
             # Keep only completed sessions (today's bar arrives after the close).
             bars = [b for b in bars if b.ts + timedelta(hours=15, minutes=30) <= now]
             loaded += rt.engine.load_daily_history(sym, bars, now) > 0
-        self.history_loaded_for = to_ist(now).date().isoformat()
+        if mark_loaded:
+            self.history_loaded_for = to_ist(now).date().isoformat()
+        self.history_source = prov.name if mark_loaded else f"{prov.name} (delayed fallback)"
         rt.audit.record(now, "runner", "history.loaded", {"symbols": loaded,
+                                                          "source": self.history_source,
                                                           "failed": failed[:20]})
         if failed:
             rt.notifier.send(now, "warning", f"History failed for {len(failed)} symbols")
@@ -222,6 +236,7 @@ class LiveRunner:
     def status(self) -> dict[str, Any]:
         return {"running": self.running, "last_error": self.last_error,
                 "history_loaded_for": self.history_loaded_for,
+                "history_source": self.history_source,
                 "daily_cycle_done_for": self.daily_cycle_done_for,
                 "last_tick_count": self.last_tick_count,
                 "last_news": self.last_news}

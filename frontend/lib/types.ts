@@ -49,7 +49,7 @@ export type Status = {
   upstox: { configured: boolean; logged_in: boolean; since: string | null };
   groq: { configured: boolean; model: string; last_error: string };
   news: { last_run: string | null; counts: Record<string, number>; errors: string[] };
-  runner: { running: boolean; last_error: string; last_tick_count: number };
+  runner: { running: boolean; last_error: string; last_tick_count: number; history_source?: string };
   heartbeat: { ts: string; running: boolean } | null;
   telegram: boolean;
   demo: boolean;

@@ -415,8 +415,8 @@ def create_app(settings: Settings | None = None, runtime: Runtime | None = None,
                   cfg.strategy.regime.vix_symbol]
         data: dict[str, Any] = {}
         failed: list[str] = []
-        prov = rt.provider
-        if not prov.is_ready():
+        prov = rt.history_provider()
+        if prov is None:
             raise HTTPException(409, "data provider not ready (log in to Upstox first)")
         for sym in wanted:
             try:
@@ -429,7 +429,7 @@ def create_app(settings: Settings | None = None, runtime: Runtime | None = None,
                                          rt.calendar)
         params = {"symbols": uni.symbols, "start": body.start, "end": body.end,
                   "capital": float(cfg.strategy.capital), "config_version": rt.config_version,
-                  "provider": rt.provider.name, "failed": failed}
+                  "provider": prov.name, "failed": failed}
         run_id = rt.repo.save_backtest(rt.clock.now(), params, result.metrics,
                                        result.equity_curve, result.trades)
         return j({"id": run_id, "params": params, "metrics": result.metrics,

@@ -49,6 +49,12 @@ class Runtime:
         self.config_version, self.config = self._load_or_seed_config()
         self.universe = Universe.from_config(self.config.strategy.universe)
         self.provider: MarketDataProvider = provider or self._make_provider()
+        # While Upstox is not logged in (or the account is not active yet), daily
+        # history for charts and backtests comes from delayed Yahoo data. Trading
+        # stays blocked: there are no fresh live prices, so risk checks fail closed.
+        self.fallback: MarketDataProvider | None = (
+            YFinanceProvider({k: v["yfinance"] for k, v in self.universe.indices.items()})
+            if provider is None and settings.data_provider == "upstox" else None)
         self.llm = GroqSentimentClient(
             settings.groq_api_key.get_secret_value() if settings.groq_api_key else None,
             settings.groq_model, settings.groq_min_interval_sec)
@@ -72,6 +78,11 @@ class Runtime:
         if self.settings.data_provider == "yfinance":
             return YFinanceProvider({k: v["yfinance"] for k, v in idx.items()})
         return ReplayProvider({}, self.clock)
+
+    def history_provider(self) -> MarketDataProvider | None:
+        if self.provider.is_ready():
+            return self.provider
+        return self.fallback
 
     def build_engine(self) -> TradingEngine:
         sc = self.config.strategy

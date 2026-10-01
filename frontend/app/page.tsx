@@ -79,7 +79,7 @@ export default function Overview() {
             }
           >
             {status.upstox.configured
-              ? "Upstox tokens expire daily. Log in each morning before 09:15 IST."
+              ? `Upstox tokens expire daily. Log in each morning before 09:15 IST. Until then, charts and backtests use delayed Yahoo history${status.runner.history_source ? "" : " (loading…)"} and no trades are placed.`
               : "Add UPSTOX_API_KEY and UPSTOX_API_SECRET to backend/.env, then restart the API."}
           </Banner>
         )}

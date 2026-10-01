@@ -164,3 +164,31 @@ def test_watchdog_sets_kill_switch_and_engine_obeys(cfg: AppConfig, db: Database
     assert placed[0].state is OrderState.REJECTED
     fresh = check_once(repo, AuditLog(db), eng.calendar, NOW + timedelta(hours=12), 90, True)
     assert fresh == {"market_open": False}
+
+
+def test_history_fallback_while_upstox_logged_out() -> None:
+    """Charts get delayed history, but trading stays blocked (no live prices)."""
+    from datetime import date
+
+    from algotrade.data.providers.replay import ReplayProvider, synthetic_daily_bars
+
+    clock = ManualClock(NOW)
+    rt = Runtime(Settings(data_provider="upstox", database_url="sqlite://"),
+                 db=Database("sqlite://"), clock=clock)
+    assert rt.fallback is not None and not rt.provider.is_ready()
+    bars = {s: synthetic_daily_bars(s, date(2025, 6, 1), 200, seed=1)
+            for s in rt.universe.symbols[:3]}
+    rt.fallback = ReplayProvider(bars, clock)
+    runner = LiveRunner(rt)
+
+    async def step_and_wait() -> None:
+        await runner.step(NOW)
+        assert runner._history_task is not None
+        await runner._history_task
+
+    run(step_and_wait())
+    sym = rt.universe.symbols[0]
+    assert len(rt.engine.daily[sym]) > 100
+    assert runner.history_source == "replay (delayed fallback)"
+    assert runner.history_loaded_for == ""  # real Upstox history still loads after login
+    assert rt.history_provider() is rt.fallback
