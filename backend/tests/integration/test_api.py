@@ -163,3 +163,51 @@ def test_watchlist_and_scan_endpoints() -> None:
                             "no_signal", "not_enough_history"}
         scores = [row["score"] for row in wl["rows"] if row["score"] is not None]
         assert scores == sorted(scores, reverse=True)
+
+
+def test_market_insights_health_and_activity() -> None:
+    from datetime import date
+
+    from algotrade.data.providers.replay import synthetic_daily_bars
+
+    with client(ManualClock(NOW)) as c:
+        empty = c.get("/api/market", headers=H).json()
+        assert empty["index"] is None and empty["breadth"] is None
+        health = c.get("/api/status", headers=H).json()["health"]
+        assert health["verdict"] == "stopped"  # engine not started in tests
+        keys = [s["key"] for s in health["steps"]]
+        assert keys == ["engine", "prices", "history", "news", "decision", "execution",
+                        "safety"]
+
+        rt = c.app.state.rt  # type: ignore[attr-defined]
+        for i, s in enumerate(rt.universe.symbols[:8]):
+            rt.engine.load_daily_history(
+                s, synthetic_daily_bars(s, date(2025, 3, 3), 300, seed=i, drift=0.002), NOW)
+        rt.engine.load_daily_history("NIFTY50", synthetic_daily_bars(
+            "NIFTY50", date(2025, 3, 3), 300, seed=99, start_price=20000, drift=0.002), NOW)
+        rt.engine.load_daily_history("INDIAVIX", synthetic_daily_bars(
+            "INDIAVIX", date(2025, 3, 3), 300, seed=98, start_price=14), NOW)
+        m = c.get("/api/market", headers=H).json()
+        assert m["index"]["ema"] is not None and len(m["index"]["spark"]) == 90
+        assert m["vix"]["last"] > 0
+        b = m["breadth"]
+        assert b["advancers"] + b["decliners"] + b["unchanged"] == b["total"] == 8
+        assert sum(s["count"] for s in m["sectors"]) == 8
+        assert all(g["change_pct"] > 0 for g in m["gainers"])
+
+        assert c.post("/api/engine/scan", headers=H).status_code == 200
+        feed = c.get("/api/activity", headers=H).json()
+        assert feed and feed[0]["kind"] == "decision" and "Scored 8 stocks" in feed[0]["text"]
+        steps = {s["key"]: s for s in c.get("/api/status", headers=H).json()["health"]["steps"]}
+        assert steps["decision"]["last"] and steps["decision"]["next"]
+        assert "8/" in steps["history"]["detail"]
+
+
+def test_describe_hides_noise_and_explains_trades() -> None:
+    from algotrade.api.insights import describe
+
+    assert describe("order.acknowledged", "oms", {}) is None
+    kind, level, text = describe("fill", "engine", {"symbol": "INFY", "side": "SELL", "qty": 3,
+                                                    "price": 1500, "charges": 18.2,
+                                                    "purpose": "protective_stop"}) or ("", "", "")
+    assert kind == "trade" and level == "warning" and "stop-loss hit" in text

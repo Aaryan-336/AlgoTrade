@@ -54,6 +54,7 @@ export type Status = {
   telegram: boolean;
   demo: boolean;
   alerts: { ts: string; level: "info" | "warning" | "critical"; text: string }[];
+  health?: Health;
 };
 
 export type PositionRow = {
@@ -243,4 +244,71 @@ export type Watchlist = {
   entry_threshold: number;
   pending: Record<string, "BUY" | "SELL">;
   rows: WatchRow[];
+};
+
+export type HealthState = "ok" | "idle" | "warn" | "error";
+
+export type HealthStep = {
+  key: string;
+  label: string;
+  state: HealthState;
+  detail: string;
+  last: string | null;
+  next: string | null;
+};
+
+export type Health = {
+  verdict: "active" | "waiting" | "degraded" | "stopped";
+  headline: string;
+  market_open: boolean;
+  next: { label: string; at: string; when: string } | null;
+  steps: HealthStep[];
+};
+
+export type ActivityItem = {
+  id: number;
+  ts: string;
+  kind: "decision" | "trade" | "risk" | "safety" | "news" | "data" | "system";
+  level: "info" | "warning" | "critical";
+  text: string;
+};
+
+type Mover = { symbol: string; name: string; sector: string; ltp: number; change_pct: number; held: boolean };
+type SentimentPick = { symbol: string; score: number; news: number };
+
+export type Market = {
+  as_of: { bar_date: string | null; live: boolean };
+  index: {
+    symbol: string;
+    last: number;
+    change_pct: number | null;
+    ema: number | null;
+    ema_period: number;
+    above_ema: boolean | null;
+    ema_gap_pct: number | null;
+    change_20d_pct: number | null;
+    spark: { t: number; v: number }[];
+    live: boolean;
+  } | null;
+  vix: { last: number; change_pct: number | null; reduce_above: number; elevated: boolean } | null;
+  breadth: {
+    advancers: number;
+    decliners: number;
+    unchanged: number;
+    total: number;
+    pct_above_50ema: number | null;
+    at_20d_high: number;
+  } | null;
+  sectors: { sector: string; change_pct: number; count: number }[];
+  gainers: Mover[];
+  losers: Mover[];
+  sentiment: {
+    average: number;
+    covered: number;
+    positive: number;
+    negative: number;
+    most_positive: SentimentPick[];
+    most_negative: SentimentPick[];
+    vetoed: string[];
+  } | null;
 };

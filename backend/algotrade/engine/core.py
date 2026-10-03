@@ -400,7 +400,8 @@ class TradingEngine:
         index_fs = FeatureSet(self.daily[idx_sym]) if self.daily.get(idx_sym) else None
         expires = expiry_for(bar_ts, self.cfg.strategy.timeframe,
                              self.cfg.strategy.decision.intent_ttl_bars, self.calendar)
-        res = self.decision.run(now, bar_ts, self._features(bar_ts), self.portfolio.positions,
+        features = self._features(bar_ts)
+        res = self.decision.run(now, bar_ts, features, self.portfolio.positions,
                                 self.sentiment, index_fs,
                                 float(vix_bars[-1].close) if vix_bars else None, expires)
         self.regime = res.regime
@@ -433,7 +434,7 @@ class TradingEngine:
         self._save_state(now)
         self._audit(now, "decision.cycle", {
             "bar_ts": bar_ts, "intents": [f"{i.side.value} {i.symbol}" for i in res.intents],
-            "signals": len(res.signals), "regime": res.regime})
+            "signals": len(res.signals), "scored": len(features), "regime": res.regime})
         return len(res.intents)
 
     # ============================================================ execution

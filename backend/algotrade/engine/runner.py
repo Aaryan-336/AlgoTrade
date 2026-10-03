@@ -164,6 +164,9 @@ class LiveRunner:
                 continue
             # Keep only completed sessions (today's bar arrives after the close).
             bars = [b for b in bars if b.ts + timedelta(hours=15, minutes=30) <= now]
+            if not bars:  # never replace good history with an empty answer
+                failed.append(f"{sym}: no bars returned")
+                continue
             loaded += rt.engine.load_daily_history(sym, bars, now) > 0
         if mark_loaded:
             self.history_loaded_for = to_ist(now).date().isoformat()

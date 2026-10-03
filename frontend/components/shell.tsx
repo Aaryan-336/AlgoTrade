@@ -71,6 +71,12 @@ export function Shell({ children }: { children: ReactNode }) {
                 ? [status.provider.name, status.provider.message].filter(Boolean).join(" · ")
                 : "connecting…"}
             </span>
+            {status?.health && (
+              <Link href="/" className="flex items-center gap-1.5 hover:text-ink" title={status.health.headline}>
+                <Dot ok={status.health.verdict === "active" || status.health.verdict === "waiting"} warn={status.health.verdict === "degraded"} />
+                Bot {status.health.verdict === "stopped" ? "not trading" : status.health.verdict === "degraded" ? "needs attention" : "running"}
+              </Link>
+            )}
           </div>
           <div className="ml-auto flex items-center gap-4">
             {status && (

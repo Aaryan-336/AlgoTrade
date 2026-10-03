@@ -22,6 +22,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
 
+from algotrade.api.insights import bot_health, change_pct, describe, last_and_prev, market_insights
 from algotrade.backtest.engine import run_backtest, warmup_start
 from algotrade.config.models import AppConfig, RiskConfig, StrategyConfig
 from algotrade.config.settings import Settings, get_settings
@@ -145,6 +146,7 @@ def create_app(settings: Settings | None = None, runtime: Runtime | None = None,
             "news": {"last_run": rt.news.last_run, "counts": rt.news.last_counts,
                      "errors": rt.news.last_errors[:5]},
             "runner": runner.status(),
+            "health": bot_health(rt, runner, now),
             "heartbeat": hb,
             "telegram": bool(settings.telegram_bot_token and settings.telegram_chat_id),
             "demo": bool(demo.get("active")),
@@ -252,13 +254,10 @@ def create_app(settings: Settings | None = None, runtime: Runtime | None = None,
         eng = rt.engine
         out = []
         for inst in rt.universe.instruments():
-            bars = eng.daily.get(inst.symbol, [])
-            prev = bars[-2].close if len(bars) > 1 else None
-            last = eng.prices.get(inst.symbol) or (bars[-1].close if bars else None)
+            last, prev = last_and_prev(eng, inst.symbol)
             sent = eng.sentiment.get(inst.symbol)
             out.append({"symbol": inst.symbol, "name": inst.name, "sector": inst.sector,
-                        "ltp": last,
-                        "change_pct": float((last / prev - 1) * 100) if last and prev else None,
+                        "ltp": last, "change_pct": change_pct(last, prev),
                         "held": inst.symbol in eng.portfolio.positions,
                         "sentiment": sent.score if sent and not sent.missing else None,
                         "news_count": sent.n_items if sent else 0,
@@ -284,6 +283,32 @@ def create_app(settings: Settings | None = None, runtime: Runtime | None = None,
             "position": {"avg_price": pos.avg_price, "stop": pos.stop, "target": pos.target,
                          "qty": pos.qty} if pos else None,
         })
+
+    @app.get("/api/market", dependencies=guard)
+    async def market(request: Request) -> Any:
+        """Market insights for the Overview: index, VIX, breadth, sectors, movers, news."""
+        rt = rt_of(request)
+        return j(market_insights(rt, rt.clock.now()))
+
+    @app.get("/api/activity", dependencies=guard)
+    async def activity(request: Request, limit: int = Query(40, ge=1, le=200)) -> Any:
+        """What the bot has done, in plain words, newest first (from the audit log)."""
+        rt = rt_of(request)
+        from sqlalchemy import select
+
+        from algotrade.db.models import AuditRow
+        out: list[dict[str, Any]] = []
+        with rt.db.session() as s:
+            rows = s.execute(select(AuditRow).order_by(AuditRow.id.desc()).limit(limit * 15)
+                             ).scalars().all()
+            for r in rows:
+                d = describe(r.event, r.actor, r.payload or {})
+                if d is None:
+                    continue
+                out.append({"id": r.id, "ts": r.ts, "kind": d[0], "level": d[1], "text": d[2]})
+                if len(out) >= limit:
+                    break
+        return j(out)
 
     @app.get("/api/news", dependencies=guard)
     async def news(request: Request, symbol: str | None = None,

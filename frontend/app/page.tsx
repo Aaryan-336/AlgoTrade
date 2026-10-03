@@ -3,12 +3,15 @@
 import { useQuery } from "@tanstack/react-query";
 import Link from "next/link";
 import { useMemo } from "react";
+import { ActivityFeed, BotStatus } from "@/components/bot-status";
 import { EquityChart } from "@/components/charts";
+import { MarketInsights } from "@/components/market";
 import { TickerTape } from "@/components/tradingview";
 import { Badge, Banner, Button, Card, Empty, Meter, Stat } from "@/components/ui";
 import { API_URL, api } from "@/lib/api";
 import { ago, humanize, money, pct, signedMoney, tone, when } from "@/lib/format";
 import { useLive } from "@/lib/live";
+import type { ActivityItem, Market } from "@/lib/types";
 
 type EquityPoint = { ts: string; equity: number; drawdown_pct: number };
 
@@ -18,6 +21,16 @@ export default function Overview() {
     queryKey: ["equity", 180],
     queryFn: () => api<EquityPoint[]>("/api/equity?days=180"),
     refetchInterval: 60_000,
+  });
+  const market = useQuery({
+    queryKey: ["market"],
+    queryFn: () => api<Market>("/api/market"),
+    refetchInterval: status?.market_open ? 10_000 : 60_000,
+  });
+  const activity = useQuery({
+    queryKey: ["activity"],
+    queryFn: () => api<ActivityItem[]>("/api/activity?limit=40"),
+    refetchInterval: 5_000,
   });
   const points = useMemo(() => {
     // One point per day keeps the curve readable.
@@ -90,7 +103,15 @@ export default function Overview() {
         )}
       </div>
 
-      {/* 2. The money. */}
+      {/* 2. Is the bot doing its job right now, and what has it done? */}
+      <div className="grid gap-5 xl:grid-cols-3">
+        <div className="xl:col-span-2">
+          <BotStatus health={status.health} now={status.now} />
+        </div>
+        <ActivityFeed items={activity.data} loading={activity.isLoading} />
+      </div>
+
+      {/* 3. The money. */}
       <Card>
         <div className="grid grid-cols-2 gap-5 md:grid-cols-6">
           <div className="col-span-2">
@@ -113,12 +134,15 @@ export default function Overview() {
         </div>
       </Card>
 
+      {/* 4. What the market is doing. */}
+      <MarketInsights data={market.data} loading={market.isLoading} />
+
       <div className="grid gap-5 xl:grid-cols-3">
         <Card title="Equity" className="xl:col-span-2" action={<span className="text-xs text-muted">paper account</span>}>
           {points.length > 1 ? <EquityChart points={points} /> : <Empty>The equity curve starts after the first trading day.</Empty>}
         </Card>
 
-        {/* 3. Risk usage: how close each hard limit is. */}
+        {/* Risk usage: how close each hard limit is. */}
         <Card title="Risk limits in use">
           <ul className="space-y-4 text-[13px]">
             <li>
@@ -236,21 +260,6 @@ export default function Overview() {
         </Card>
       </div>
 
-      <Card title="Alerts" pad={false}>
-        {status.alerts.length === 0 ? (
-          <Empty>No alerts yet.</Empty>
-        ) : (
-          <ul className="divide-y divide-line">
-            {status.alerts.slice(0, 8).map((a, idx) => (
-              <li key={idx} className="flex items-start gap-3 px-4 py-2.5 text-[13px]">
-                <Badge tone={a.level === "critical" ? "neg" : a.level === "warning" ? "warn" : "neutral"}>{a.level}</Badge>
-                <span className="min-w-0 flex-1 text-ink-2">{a.text}</span>
-                <span className="shrink-0 text-[11px] text-muted">{when(a.ts)}</span>
-              </li>
-            ))}
-          </ul>
-        )}
-      </Card>
 
       <div className="card overflow-hidden px-2">
         <TickerTape symbols={portfolio.positions.map((p) => p.symbol).concat(["RELIANCE", "HDFCBANK", "INFY", "TCS", "ICICIBANK"])} />
