@@ -1,0 +1,94 @@
+# Strategy, decision, sentiment and paper-execution settings.
+# All values are research starting points, not recommendations
+# (docs/strategy-spec.md). Final values must come from walk-forward tests.
+
+capital: 5000                    # starting paper capital in rupees
+timeframe: 1d                    # decision bars: 1d (swing, default) or 15m
+product: CNC                     # delivery
+
+universe:
+  # Symbols to trade. Leave empty to use the whole bundled Nifty 50 list.
+  symbols: []
+  min_price: 20
+  min_avg_traded_value: 50000000  # 20-day average daily traded value, rupees
+  min_history_bars: 60
+  ban_list: []                    # symbols never to trade (ASM/GSM, personal)
+
+strategies:
+  trend:
+    enabled: true
+    fast_ema: 20
+    slow_ema: 50
+    rsi_period: 14
+    rsi_min: 50
+    rsi_max: 70
+    volume_period: 20
+    atr_period: 14
+    atr_stop_mult: 2.0
+    reward_risk: 2.0
+    max_holding_days: 30
+  breakout:
+    enabled: true
+    lookback: 20
+    volume_mult: 1.5
+    atr_period: 14
+    atr_stop_mult: 1.5
+    reward_risk: 2.0
+    squeeze_lookback: 20
+    max_holding_days: 20
+
+decision:
+  weights:
+    trend: 0.35
+    momentum: 0.25
+    volume: 0.15
+    sentiment: 0.25
+  entry_threshold: 0.60
+  exit_threshold: 0.30
+  trailing_after_r: 1.0          # start trailing once price is 1R in profit
+  trailing_atr_mult: 2.0
+  intent_ttl_bars: 1             # pending intents expire after this many decision bars
+
+rotation:
+  enabled: true
+  min_score_gap: 0.15            # candidate must beat the weakest holding by this much
+  min_hold_days: 3               # never rotate out of a position younger than this
+
+regime:
+  enabled: true
+  index_symbol: NIFTY50
+  index_ema: 200                 # below this EMA: no new long entries
+  vix_symbol: INDIAVIX
+  vix_reduce_above: 22           # above this VIX: halve position size
+  event_blackout_dates: []       # YYYY-MM-DD, e.g. budget or RBI policy days
+  symbol_blackouts: {}           # SYMBOL: [YYYY-MM-DD, ...] e.g. results dates
+
+sentiment:
+  enabled: true
+  lookback_days: 30
+  half_life_days: 3.0
+  min_confidence: 0.5
+  veto_score: -0.5               # material items at or below this block entries
+  veto_window_days: 7
+  exit_on_negative_material: true
+  novelty_move_pct: 5.0          # price already moved this much since the news: halve its weight
+  max_items_per_call: 12
+
+paper_broker:
+  spread_bps: 5                  # half-spread paid on every market fill
+  base_slippage_bps: 5
+  impact_bps_per_pct_adv: 10     # extra slippage per 1% of average daily volume
+  max_fill_fraction_of_bar_volume: 0.1
+  random_reject_prob: 0.0        # set above 0 to rehearse broker rejects
+  seed: 7
+
+costs:
+  # Zerodha equity delivery charges. VERIFY against the broker's charge calculator.
+  brokerage_pct: 0.0
+  brokerage_max: 20
+  stt_pct: 0.1                   # on buy and sell for delivery
+  exchange_txn_pct: 0.00297      # NSE
+  sebi_per_crore: 10
+  stamp_duty_buy_pct: 0.015
+  gst_pct: 18
+  dp_charge_per_sell: 15.93      # per scrip per sell day, incl. GST

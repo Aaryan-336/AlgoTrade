@@ -1,0 +1,177 @@
+@import "tailwindcss";
+
+/* Design tokens. Neutral surfaces, one restrained slate-blue accent.
+   Green and red are reserved for profit/loss and buy/sell only. */
+:root {
+  --bg: #f7f7f5;
+  --surface: #ffffff;
+  --surface-2: #f1f1ee;
+  --border: #e4e4e0;
+  --border-strong: #d2d2cc;
+  --text: #17181a;
+  --text-2: #4a4d52;
+  --muted: #7c8087;
+  --accent: #34568b;
+  --accent-soft: #e8edf5;
+  --pos: #137a3e;
+  --pos-soft: #e6f3eb;
+  --neg: #b42318;
+  --neg-soft: #fbeae8;
+  --warn: #a15c07;
+  --warn-soft: #fbf1e1;
+  --chart-grid: #efefec;
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0d0e10;
+    --surface: #15161a;
+    --surface-2: #1b1d21;
+    --border: #25272c;
+    --border-strong: #33363c;
+    --text: #ececec;
+    --text-2: #b8bbc1;
+    --muted: #868a93;
+    --accent: #8aa7d8;
+    --accent-soft: #1c2433;
+    --pos: #3fb971;
+    --pos-soft: #11261a;
+    --neg: #f0645a;
+    --neg-soft: #2c1513;
+    --warn: #e0a141;
+    --warn-soft: #2a1f0e;
+    --chart-grid: #1c1e22;
+    color-scheme: dark;
+  }
+}
+
+:root[data-theme="dark"] {
+  --bg: #0d0e10;
+  --surface: #15161a;
+  --surface-2: #1b1d21;
+  --border: #25272c;
+  --border-strong: #33363c;
+  --text: #ececec;
+  --text-2: #b8bbc1;
+  --muted: #868a93;
+  --accent: #8aa7d8;
+  --accent-soft: #1c2433;
+  --pos: #3fb971;
+  --pos-soft: #11261a;
+  --neg: #f0645a;
+  --neg-soft: #2c1513;
+  --warn: #e0a141;
+  --warn-soft: #2a1f0e;
+  --chart-grid: #1c1e22;
+  color-scheme: dark;
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-line: var(--border);
+  --color-line-strong: var(--border-strong);
+  --color-ink: var(--text);
+  --color-ink-2: var(--text-2);
+  --color-muted: var(--muted);
+  --color-accent: var(--accent);
+  --color-accent-soft: var(--accent-soft);
+  --color-pos: var(--pos);
+  --color-pos-soft: var(--pos-soft);
+  --color-neg: var(--neg);
+  --color-neg-soft: var(--neg-soft);
+  --color-warn: var(--warn);
+  --color-warn-soft: var(--warn-soft);
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-mono-jb), ui-monospace, SFMono-Regular, monospace;
+}
+
+html,
+body {
+  background: var(--bg);
+  color: var(--text);
+}
+
+body {
+  font-feature-settings: "cv11", "ss01";
+  -webkit-font-smoothing: antialiased;
+}
+
+.num {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+
+.card {
+  min-width: 0; /* let grid items shrink so wide tables scroll inside the card */
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.label {
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+table.data {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+table.data th {
+  text-align: left;
+  font-weight: 500;
+  font-size: 11px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--muted);
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+table.data td.num,
+table.data td.r {
+  white-space: nowrap;
+}
+table.data td {
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+table.data tr:last-child td {
+  border-bottom: none;
+}
+table.data th.r,
+table.data td.r {
+  text-align: right;
+}
+
+input,
+select,
+textarea {
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 7px;
+  padding: 6px 10px;
+  font-size: 13px;
+  color: var(--text);
+  outline: none;
+}
+input:focus,
+select:focus,
+textarea:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}

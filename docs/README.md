@@ -25,6 +25,7 @@ It runs in **paper mode first**; real order execution is enabled only after the 
 | 11 | `roadmap.md` | Phased plan with exit criteria |
 | 12 | `runbook.md` | Daily operations and incident procedures |
 | 13 | `CLAUDE.md` | Instructions for Claude Code when building this repo |
+| 14 | `risk-features.md` | Every risk control, where it lives, and whether it is built |
 
 ## Operating modes (used across all docs)
 

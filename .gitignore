@@ -1,1 +1,23 @@
 .DS_Store
+# secrets
+.env
+*.env.local
+# python
+.venv/
+__pycache__/
+*.pyc
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.hypothesis/
+.coverage
+*.egg-info/
+# local databases
+*.db
+*.db-wal
+*.db-shm
+# node
+node_modules/
+.next/
+# database dumps from the backup service
+infra/backups/

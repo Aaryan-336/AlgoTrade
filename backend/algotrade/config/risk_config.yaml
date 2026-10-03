@@ -1,0 +1,38 @@
+# Risk limits. Starting defaults for PAPER trading (docs/risk-management.md §2).
+# Percentages scale with capital. Tighten, never loosen, for live.
+# Changes are refused during market hours and take effect at the next session start.
+
+risk_per_trade_pct: 1.0          # % of equity risked to the stop on one trade
+max_position_pct: 20.0           # single-stock cap, % of equity
+max_sector_pct: 35.0             # sector cap, % of equity
+max_open_positions: 5
+max_daily_loss_pct: 2.0          # breaker: block new entries for the rest of the day
+max_weekly_loss_pct: 4.0         # breaker: block entries until manual reset
+max_drawdown_pct: 10.0           # breaker: halt until manual reset with a review note
+max_orders_per_minute: 5
+max_orders_per_day: 20
+max_order_value: 25000           # absolute rupee cap per order (fat-finger guard)
+max_price_deviation_pct: 2.0     # reject if order ref price is this far from last traded price
+max_circuit_band_pct: 20.0       # reject if LTP moved more than this vs previous close (band proxy)
+max_adv_participation_pct: 1.0   # order value vs 20-day average traded value
+min_cash_buffer_pct: 10.0        # always keep this share of equity in cash
+max_data_staleness_sec: 120      # LTP older than this blocks orders for the symbol
+no_entry_first_minutes: 5
+no_entry_last_minutes: 15
+min_stop_distance_pct: 0.5       # stops tighter than this are rejected as noise
+max_stop_distance_pct: 15.0      # stops wider than this are rejected as absurd
+min_edge_to_cost_ratio: 3.0      # reward-at-target must exceed round-trip costs by this multiple
+max_correlation: 0.85            # skip entries highly correlated with an existing holding
+allow_averaging: false           # never add to an existing position
+
+breakers:
+  daily_loss_auto_reset: true    # daily loss breaker clears at the next trading day
+  broker_error_threshold: 3      # consecutive broker errors before halting
+  reject_storm_threshold: 5      # broker rejects within reject_storm_window_min
+  reject_storm_window_min: 10
+  stale_data_halt_sec: 300       # feed silent this long in market hours trips the stale breaker
+
+kill_switch:
+  default_action: block          # block | flatten
+  watchdog_heartbeat_timeout_sec: 90
+  watchdog_triggers_kill_switch: true
