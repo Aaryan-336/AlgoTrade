@@ -78,7 +78,7 @@ export default function Overview() {
         {status.provider.name === "upstox" && !status.upstox.logged_in && (
           <Banner
             tone="accent"
-            title="Connect Upstox for live prices"
+            title={status.upstox.analytics_rejected ? "Upstox rejected the analytics token" : "Connect Upstox for live prices"}
             action={
               status.upstox.configured ? (
                 <a href={`${API_URL}/api/auth/upstox/login`}>
@@ -91,7 +91,9 @@ export default function Overview() {
               )
             }
           >
-            {status.upstox.configured
+            {status.upstox.analytics_rejected
+              ? "It has expired or was revoked. Generate a new one (Upstox Developer Apps > Analytics), put it in UPSTOX_ANALYTICS_TOKEN and restart the API, or log in for today."
+              : status.upstox.configured
               ? `Upstox tokens expire daily. Log in each morning before 09:15 IST. Until then, charts and backtests use delayed Yahoo history${status.runner.history_source ? "" : " (loading…)"} and no trades are placed.`
               : "Add UPSTOX_API_KEY and UPSTOX_API_SECRET to backend/.env, then restart the API."}
           </Banner>

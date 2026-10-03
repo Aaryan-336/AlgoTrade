@@ -22,13 +22,19 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
 
-from algotrade.api.insights import bot_health, change_pct, describe, last_and_prev, market_insights
 from algotrade.backtest.engine import run_backtest, warmup_start
 from algotrade.config.models import AppConfig, RiskConfig, StrategyConfig
 from algotrade.config.settings import Settings, get_settings
 from algotrade.core.clock import to_ist
 from algotrade.data.providers.base import ProviderError
 from algotrade.data.universe import Universe
+from algotrade.engine.insights import (
+    bot_health,
+    change_pct,
+    describe,
+    last_and_prev,
+    market_insights,
+)
 from algotrade.engine.runner import LiveRunner
 from algotrade.engine.runtime import Runtime
 from algotrade.oms.state_machine import WORKING
@@ -140,7 +146,10 @@ def create_app(settings: Settings | None = None, runtime: Runtime | None = None,
                          "ready": rt.provider.is_ready()},
             "upstox": {"configured": rt.upstox_auth.configured,
                        "logged_in": rt.upstox_auth.token is not None,
-                       "since": rt.upstox_auth.token_set_at},
+                       "since": rt.upstox_auth.token_set_at,
+                       "kind": rt.upstox_auth.kind,
+                       "expires_at": rt.upstox_auth.expires_at,
+                       "analytics_rejected": rt.upstox_auth.analytics_rejected},
             "groq": {"configured": rt.llm.configured, "model": rt.llm.model,
                      "last_error": rt.llm.last_error},
             "news": {"last_run": rt.news.last_run, "counts": rt.news.last_counts,

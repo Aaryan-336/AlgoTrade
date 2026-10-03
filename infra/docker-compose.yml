@@ -1,8 +1,10 @@
 # Paper-trading stack. Ports bind to 127.0.0.1 only: reach the dashboard via
 # a VPN or SSH tunnel, never a public port (docs/security.md §3).
+# Full server setup with Tailscale and phone alerts: docs/deploy.md
 #
 #   cp backend/.env.example backend/.env   # fill in keys
-#   POSTGRES_PASSWORD=... docker compose -f infra/docker-compose.yml up -d --build
+#   cp infra/.env.example infra/.env       # POSTGRES_PASSWORD, PUBLIC_API_URL
+#   docker compose -f infra/docker-compose.yml --env-file infra/.env up -d --build
 
 services:
   postgres:
@@ -48,10 +50,33 @@ services:
     build:
       context: ../frontend
       args:
-        NEXT_PUBLIC_API_URL: http://localhost:8000
+        # The address your browser/phone uses to reach the API, e.g. the
+        # Tailscale HTTPS name. Baked into the build: rebuild after changing.
+        NEXT_PUBLIC_API_URL: ${PUBLIC_API_URL:-http://localhost:8000}
     depends_on: [api]
     ports:
       - "127.0.0.1:3000:3000"
+    restart: unless-stopped
+
+  # Nightly compressed database dump, kept for 14 days. Copy ./backups off
+  # the server too (docs/deploy.md §8).
+  backup:
+    image: postgres:16-alpine
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - ./backups:/backups
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        while true; do
+          pg_dump -h postgres -U algotrade algotrade | gzip > /backups/algotrade-$$(date +%F).sql.gz
+          find /backups -name 'algotrade-*.sql.gz' -mtime +14 -delete
+          sleep 86400
+        done
+    depends_on:
+      postgres:
+        condition: service_healthy
     restart: unless-stopped
 
 volumes:

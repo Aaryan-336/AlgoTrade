@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { useEffect, useState, type ReactNode } from "react";
 import { Badge, Button, Card, ErrorNote, PageHeader } from "@/components/ui";
 import { API_URL, api, del, getToken, post, put, setToken } from "@/lib/api";
-import { when } from "@/lib/format";
+import { day, when } from "@/lib/format";
 import { useLive } from "@/lib/live";
 import type { Profile, ProfilesResponse } from "@/lib/types";
 
@@ -179,17 +179,21 @@ export default function Settings() {
           <div>
             <div className="text-[13px] font-medium">Upstox market data</div>
             <p className="mt-1 text-[12px] text-muted">
-              {status?.upstox.logged_in
-                ? `Connected since ${when(status.upstox.since)}.`
-                : status?.upstox.configured
-                  ? "Configured. Log in each trading day; the token expires overnight."
-                  : "Set UPSTOX_API_KEY, UPSTOX_API_SECRET and UPSTOX_REDIRECT_URI in backend/.env."}
+              {status?.upstox.logged_in && status.upstox.kind === "analytics"
+                ? `Analytics token: no daily login needed${status.upstox.expires_at ? `, expires ${day(status.upstox.expires_at)}` : ""}.`
+                : status?.upstox.logged_in
+                  ? `Connected since ${when(status.upstox.since)}.`
+                  : status?.upstox.analytics_rejected
+                    ? "Upstox rejected the analytics token (expired or revoked). Put a new one in UPSTOX_ANALYTICS_TOKEN and restart, or log in."
+                    : status?.upstox.configured
+                      ? "Configured. Log in each trading day (the token expires overnight), or set UPSTOX_ANALYTICS_TOKEN to skip the daily login."
+                      : "Set UPSTOX_ANALYTICS_TOKEN (no daily login), or UPSTOX_API_KEY, UPSTOX_API_SECRET and UPSTOX_REDIRECT_URI, in backend/.env."}
             </p>
             <div className="mt-2 flex gap-2">
               {status?.upstox.configured && !status.upstox.logged_in && (
                 <a href={`${API_URL}/api/auth/upstox/login`}><Button variant="primary">Log in to Upstox</Button></a>
               )}
-              {status?.upstox.logged_in && <Button onClick={() => post("/api/auth/upstox/logout").then(() => qc.invalidateQueries())}>Disconnect</Button>}
+              {status?.upstox.logged_in && status.upstox.kind !== "analytics" && <Button onClick={() => post("/api/auth/upstox/logout").then(() => qc.invalidateQueries())}>Disconnect</Button>}
             </div>
           </div>
           <div>

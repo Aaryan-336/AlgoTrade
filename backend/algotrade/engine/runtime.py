@@ -41,11 +41,13 @@ class Runtime:
         self.http = httpx.AsyncClient(timeout=20)
         self.notifier = Notifier(
             settings.telegram_bot_token.get_secret_value() if settings.telegram_bot_token
-            else None, settings.telegram_chat_id)
+            else None, settings.telegram_chat_id, min_level=settings.telegram_alert_level)
         self.upstox_auth = UpstoxAuth(
             settings.upstox_api_key.get_secret_value() if settings.upstox_api_key else None,
             settings.upstox_api_secret.get_secret_value() if settings.upstox_api_secret else None,
-            settings.upstox_redirect_uri)
+            settings.upstox_redirect_uri,
+            settings.upstox_analytics_token.get_secret_value()
+            if settings.upstox_analytics_token else None)
         self.config_version, self.config = self._load_or_seed_config()
         self._seed_profiles()
         self.universe = Universe.from_config(self.config.strategy.universe)

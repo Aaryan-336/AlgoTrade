@@ -17,6 +17,7 @@ Instrument master: https://assets.upstox.com/market-quote/instruments/exchange/N
 from __future__ import annotations
 
 import asyncio
+import base64
 import gzip
 import json
 from datetime import UTC, date, datetime, timedelta
@@ -48,8 +49,19 @@ def _upstox_error(r: httpx.Response) -> str:
     return f" ({'; '.join(p for p in parts if p)[:200]})" if parts else ""
 
 
+def jwt_expiry(token: str) -> datetime | None:
+    """Read the ``exp`` claim of a JWT without verifying it (display only)."""
+    try:
+        part = token.split(".")[1]
+        claims = json.loads(base64.urlsafe_b64decode(part + "=" * (-len(part) % 4)))
+        return datetime.fromtimestamp(int(claims["exp"]), UTC)
+    except (IndexError, ValueError, KeyError, TypeError):
+        return None
+
+
 class UpstoxAuth:
-    def __init__(self, api_key: str | None, api_secret: str | None, redirect_uri: str) -> None:
+    def __init__(self, api_key: str | None, api_secret: str | None, redirect_uri: str,
+                 analytics_token: str | None = None) -> None:
         # Stray spaces or quotes from copy-paste are a common cause of 401s.
         self.api_key = api_key.strip().strip("'\"") if api_key else None
         self.api_secret = api_secret.strip().strip("'\"") if api_secret else None
@@ -57,10 +69,17 @@ class UpstoxAuth:
         self._token: str | None = None
         self.token_set_at: datetime | None = None
         self.user: str | None = None
+        # Read-only market-data token valid for a year: no daily login needed.
+        # It cannot place orders, which is fine for paper trading.
+        self.kind: str = "login"
+        self.expires_at: datetime | None = None
+        self.analytics_rejected = False
+        if analytics_token and analytics_token.strip().strip("'\""):
+            self.set_token(analytics_token.strip().strip("'\""), kind="analytics")
 
     @property
     def configured(self) -> bool:
-        return bool(self.api_key and self.api_secret)
+        return bool(self.api_key and self.api_secret) or self.kind == "analytics"
 
     @property
     def token(self) -> str | None:
@@ -95,17 +114,24 @@ class UpstoxAuth:
         token = body.get("access_token")
         if not isinstance(token, str) or not token:
             raise ProviderError("token exchange returned no access_token")
-        self._token = token
-        self.token_set_at = datetime.now(UTC)
+        self.set_token(token)
         self.user = str(body.get("user_name") or body.get("user_id") or "")
 
-    def set_token(self, token: str) -> None:
+    def set_token(self, token: str, kind: str = "login") -> None:
         self._token = token
         self.token_set_at = datetime.now(UTC)
+        self.kind = kind
+        self.expires_at = jwt_expiry(token)
+        if kind == "analytics":
+            self.analytics_rejected = False
 
     def clear(self) -> None:
+        if self.kind == "analytics" and self._token:
+            self.analytics_rejected = True
         self._token = None
         self.token_set_at = None
+        self.expires_at = None
+        self.kind = "login"
 
 
 def _parse_candles(symbol: str, timeframe: str, payload: dict[str, Any]) -> list[Bar]:
@@ -151,8 +177,10 @@ class UpstoxProvider:
                 self._last_error = f"network: {type(exc).__name__}"
                 raise ProviderError(self._last_error) from exc
         if r.status_code == 401:
+            self._last_error = ("analytics token rejected (expired or revoked): generate "
+                                "a new one" if self.auth.kind == "analytics"
+                                else "token expired or invalid; log in again")
             self.auth.clear()
-            self._last_error = "token expired or invalid; log in again"
             raise ProviderError(self._last_error)
         if r.status_code != 200:
             self._last_error = f"HTTP {r.status_code} on {path.split('/')[2]}"

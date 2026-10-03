@@ -18,11 +18,14 @@ from typing import Any
 from algotrade.core.clock import IST, to_ist
 from algotrade.data.providers.base import MarketDataProvider, ProviderError
 from algotrade.data.providers.upstox import UpstoxProvider
+from algotrade.engine.briefs import HealthWatch, evening_brief, morning_brief
 from algotrade.engine.runtime import Runtime
 
 log = logging.getLogger("algotrade.runner")
 HISTORY_DAYS = 420
 DAILY_CYCLE_AT = time(15, 40)
+MORNING_BRIEF_AT = time(9, 0)
+EVENING_BRIEF_AT = time(15, 50)
 
 
 class LiveRunner:
@@ -41,6 +44,8 @@ class LiveRunner:
         self.last_news: datetime | None = None
         self.last_error: str = ""
         self.last_tick_count = 0
+        self.health_watch = HealthWatch()
+        self._ping_task: asyncio.Task[None] | None = None
 
     # ------------------------------------------------------------ control
     async def start(self) -> None:
@@ -52,7 +57,7 @@ class LiveRunner:
 
     async def stop(self) -> None:
         self.running = False
-        for t in (self._task, self._news_task, self._history_task):
+        for t in (self._task, self._news_task, self._history_task, self._ping_task):
             if t:
                 t.cancel()
         self._task = None
@@ -136,9 +141,48 @@ class LiveRunner:
             await eng.reconcile(now)
             if market_open or local.time() < time(16, 0):
                 eng.snapshot_equity(now)
+            if cal.is_trading_day(today) and time(9, 15) <= local.time() <= time(15, 30):
+                self.health_watch.check(rt, self, now)
+            self.maybe_send_briefs(now)
+            self.ping_healthcheck()
 
         self.maybe_start_news(now)
         await rt.notifier.flush()
+
+    # ------------------------------------------------------------- alerts
+    def maybe_send_briefs(self, now: datetime) -> None:
+        """Morning readiness check and after-close summary, once per trading day."""
+        rt = self.rt
+        local = to_ist(now)
+        today = local.date()
+        if not rt.settings.daily_briefs or not rt.calendar.is_trading_day(today):
+            return
+        sent = rt.repo.get_state("briefs") or {}
+        day = today.isoformat()
+        if sent.get("morning") != day and MORNING_BRIEF_AT <= local.time() < time(15, 30):
+            level, text = morning_brief(rt, self, now)
+            rt.notifier.send(now, level, text)
+            sent["morning"] = day
+            rt.repo.set_state("briefs", sent, now)
+        cycle_done = self.daily_cycle_done_for == day or local.time() >= time(16, 30)
+        if sent.get("evening") != day and local.time() >= EVENING_BRIEF_AT and cycle_done:
+            rt.notifier.send(now, "info", evening_brief(rt, now))
+            sent["evening"] = day
+            rt.repo.set_state("briefs", sent, now)
+
+    def ping_healthcheck(self) -> None:
+        """Dead-man's switch: if these pings stop, the monitor alerts you."""
+        url = self.rt.settings.healthcheck_ping_url
+        if not url or (self._ping_task and not self._ping_task.done()):
+            return
+
+        async def ping() -> None:
+            try:
+                await self.rt.http.get(url, timeout=10)
+            except Exception as exc:  # monitoring must never disturb trading
+                log.warning("healthcheck ping failed: %s", type(exc).__name__)
+
+        self._ping_task = asyncio.create_task(ping(), name="healthcheck-ping")
 
     # ------------------------------------------------------------ history
     async def load_history(self, now: datetime, prov: MarketDataProvider | None = None,

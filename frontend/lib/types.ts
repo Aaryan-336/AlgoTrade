@@ -46,7 +46,14 @@ export type Status = {
   now: string;
   now_ist: string;
   provider: { name: string; connected: boolean; last_update: string | null; message: string; ready: boolean };
-  upstox: { configured: boolean; logged_in: boolean; since: string | null };
+  upstox: {
+    configured: boolean;
+    logged_in: boolean;
+    since: string | null;
+    kind?: "login" | "analytics";
+    expires_at?: string | null;
+    analytics_rejected?: boolean;
+  };
   groq: { configured: boolean; model: string; last_error: string };
   news: { last_run: string | null; counts: Record<string, number>; errors: string[] };
   runner: { running: boolean; last_error: string; last_tick_count: number; history_source?: string };

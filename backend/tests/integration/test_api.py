@@ -204,7 +204,7 @@ def test_market_insights_health_and_activity() -> None:
 
 
 def test_describe_hides_noise_and_explains_trades() -> None:
-    from algotrade.api.insights import describe
+    from algotrade.engine.insights import describe
 
     assert describe("order.acknowledged", "oms", {}) is None
     kind, level, text = describe("fill", "engine", {"symbol": "INFY", "side": "SELL", "qty": 3,

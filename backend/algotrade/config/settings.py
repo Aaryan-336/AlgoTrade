@@ -21,6 +21,9 @@ class Settings(BaseSettings):
     upstox_api_key: SecretStr | None = None
     upstox_api_secret: SecretStr | None = None
     upstox_redirect_uri: str = "http://localhost:8000/api/auth/upstox/callback"
+    # Read-only token valid for a year (Developer Apps > Analytics). When set,
+    # the bot connects at startup and needs no daily login. It cannot place orders.
+    upstox_analytics_token: SecretStr | None = None
 
     groq_api_key: SecretStr | None = None
     groq_model: str = "openai/gpt-oss-120b"
@@ -28,6 +31,12 @@ class Settings(BaseSettings):
 
     telegram_bot_token: SecretStr | None = None
     telegram_chat_id: str | None = None
+    # Lowest alert level sent to Telegram: info also sends every buy, sell and brief.
+    telegram_alert_level: Literal["info", "warning", "critical"] = "info"
+    daily_briefs: bool = True  # morning readiness check and after-close summary
+    # Dead-man's switch (e.g. healthchecks.io): pinged every minute while the
+    # engine loop runs, so you are alerted even if the whole server goes down.
+    healthcheck_ping_url: str | None = None
 
     api_token: SecretStr | None = None  # required on every /api call when set
     api_host: str = "127.0.0.1"  # keep private; use a VPN/tunnel, never a public IP

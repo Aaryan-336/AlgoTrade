@@ -89,6 +89,8 @@ Every order passes every check; any failure rejects it and writes a `risk_events
 | Kill switch: block, or block and flatten (dashboard, CLI) | ✅ |
 | Watchdog process: sets kill switch if the engine heartbeat is lost | ✅ |
 | Kill switch via Telegram command | ⏳ |
+| Off-server dead-man's switch (Healthchecks.io ping every minute; alerts if the server is down) | ✅ |
+| Phone alert when the bot stops working during market hours (debounced, plus recovery notice) | ✅ |
 | Reconciliation of positions and cash every minute | ✅ |
 | Risk config locked during market hours, versioned, bounded | ✅ |
 
@@ -124,4 +126,4 @@ Every order passes every check; any failure rejects it and writes a `risk_events
 | Realistic Zerodha delivery costs (STT, stamp, exchange, SEBI, GST, DP) | ✅ (verify values) |
 | Walk-forward / parameter sweep harness | ⏳ |
 | Paper vs backtest divergence report | ⏳ |
-| Daily report (Telegram) | 🟡 (alerts only) |
+| Daily report (Telegram) | ✅ morning readiness check + after-close summary |

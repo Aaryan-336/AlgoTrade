@@ -13,6 +13,7 @@ import httpx
 
 log = logging.getLogger("algotrade.alerts")
 Level = Literal["info", "warning", "critical"]
+RANK: dict[str, int] = {"info": 0, "warning": 1, "critical": 2}
 
 
 @dataclass(frozen=True, slots=True)
@@ -24,8 +25,10 @@ class Alert:
 
 class Notifier:
     def __init__(self, telegram_token: str | None = None, chat_id: str | None = None,
-                 client: httpx.AsyncClient | None = None, quiet: bool = False) -> None:
+                 client: httpx.AsyncClient | None = None, quiet: bool = False,
+                 min_level: Level = "warning") -> None:
         self.quiet = quiet
+        self.min_rank = RANK[min_level]
         self.recent: deque[Alert] = deque(maxlen=200)
         self._token = telegram_token
         self._chat = chat_id
@@ -37,7 +40,7 @@ class Notifier:
         self.recent.appendleft(alert)
         if not self.quiet:
             getattr(log, "critical" if level == "critical" else level)(text)
-        if self._token and self._chat and level != "info":
+        if self._token and self._chat and RANK[level] >= self.min_rank:
             self._outbox.append(alert)
 
     async def flush(self) -> None:

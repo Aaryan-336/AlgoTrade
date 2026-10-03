@@ -204,9 +204,15 @@ def bot_health(rt: Runtime, runner: LiveRunner, now: datetime) -> dict[str, Any]
     # 2. Live prices
     health = rt.provider.health()
     ready = rt.provider.is_ready()
+    auth = rt.upstox_auth
     if not ready:
-        msg = ("Upstox is not logged in, so there are no live prices and no trades."
-               if health.name == "upstox" else f"{health.name}: {health.message or 'not ready'}")
+        if health.name == "upstox" and auth.analytics_rejected:
+            msg = ("Upstox rejected the analytics token (expired or revoked). Generate a new "
+                   "one under Developer Apps > Analytics and restart, or log in.")
+        elif health.name == "upstox":
+            msg = "Upstox is not logged in, so there are no live prices and no trades."
+        else:
+            msg = f"{health.name}: {health.message or 'not ready'}"
         steps.append(_step("prices", "Live prices", "error", msg, health.last_update))
     elif market_open:
         fresh = [ts for ts in eng.price_ts.values() if (now - ts).total_seconds() < 120]
@@ -224,6 +230,15 @@ def bot_health(rt: Runtime, runner: LiveRunner, now: datetime) -> dict[str, Any]
                            f"{health.name} connected. Market closed; prices resume at 09:15.",
                            health.last_update,
                            _next_session_time(rt, now, time(9, 15))))
+
+    if ready and health.name == "upstox" and auth.kind == "analytics" and auth.expires_at:
+        days_left = (auth.expires_at - now).days
+        price_step = steps[-1]
+        expiry = to_ist(auth.expires_at).strftime("%d %b %Y")
+        price_step["detail"] += f" Analytics token (no daily login), expires {expiry}."
+        if days_left < 21 and price_step["state"] in ("ok", "idle"):
+            price_step["state"] = "warn"
+            price_step["detail"] += f" Only {days_left} days left: generate a new token."
 
     # 3. Price history
     have = sum(1 for s in rt.universe.symbols if eng.daily.get(s))

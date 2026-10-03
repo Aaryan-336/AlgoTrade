@@ -62,7 +62,8 @@ DATABASE_URL=sqlite:///./demo.db DATA_PROVIDER=replay algotrade-api
 
 - **Upstox:** open a free Upstox account, then create an app at https://account.upstox.com/developer/apps. Set the redirect URL to `http://localhost:8000/api/auth/upstox/callback` (it must match `UPSTOX_REDIRECT_URI` exactly).
 - **Groq:** create a key at https://console.groq.com/keys. Without it, headlines are still collected but sentiment stays neutral.
-- **Telegram (optional):** create a bot with @BotFather, then set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`.
+- **Upstox Analytics Token (recommended):** in the same Developer Apps page, open the **Analytics** tab and generate a token. Set `UPSTOX_ANALYTICS_TOKEN` and the bot connects at startup with no daily login, for a year. It is read-only, which is all paper trading needs.
+- **Telegram (optional):** create a bot with @BotFather, then set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`. You get every trade, a 09:00 readiness check, an after-close summary and an alert if the bot stops working (`TELEGRAM_ALERT_LEVEL=warning` for problems only).
 
 ## How a trading day runs (default: daily bars)
 
@@ -79,19 +80,22 @@ You can switch to 15-minute bars in Settings (outside market hours).
 
 ```bash
 cd backend
-pytest                        # 125 tests: unit, property (Hypothesis), integration, chaos
+pytest                        # 140 tests: unit, property (Hypothesis), integration, chaos
 pytest --cov=algotrade.risk --cov=algotrade.oms   # 100% on Risk Engine and OMS
 ruff check algotrade && mypy
 cd ../frontend && npm run typecheck && npm run build
 ```
 
-## Running on a VPS
+## Running 24/7 on a server, with phone alerts
+
+Step-by-step guide: **[docs/deploy.md](docs/deploy.md)**. It covers a small Linux server, Docker Compose, Tailscale for private access from your phone, the Upstox Analytics Token (no daily login), Telegram alerts with morning and evening briefs, Healthchecks.io for server-down alerts, and nightly backups.
 
 ```bash
-POSTGRES_PASSWORD=<long-random> docker compose -f infra/docker-compose.yml up -d --build
+cp backend/.env.example backend/.env && cp infra/.env.example infra/.env   # fill both in
+docker compose -f infra/docker-compose.yml --env-file infra/.env up -d --build
 ```
 
-Ports bind to `127.0.0.1` only. Reach the dashboard over SSH tunnel or a VPN such as Tailscale, and set `API_TOKEN`. See `docs/security.md`.
+Ports bind to `127.0.0.1` only. Reach the dashboard through Tailscale, and set `API_TOKEN`. See `docs/security.md`.
 
 ## Before switching to Kite
 
