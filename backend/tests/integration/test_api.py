@@ -139,3 +139,27 @@ def test_backtest_history_list_detail_delete() -> None:
         assert detail["equity_curve"] and detail["params"]["version_name"] == "Slow momentum"
         assert c.delete(f"/api/backtests/{rid}", headers=H).status_code == 200
         assert c.get(f"/api/backtests/{rid}", headers=H).status_code == 404
+
+
+def test_watchlist_and_scan_endpoints() -> None:
+    from datetime import date
+
+    from algotrade.data.providers.replay import synthetic_daily_bars
+
+    with client(ManualClock(NOW)) as c:
+        assert c.post("/api/engine/scan", headers=H).status_code == 409  # no history yet
+        rt = c.app.state.rt  # type: ignore[attr-defined]
+        for i, s in enumerate(rt.universe.symbols[:6]):
+            rt.engine.load_daily_history(
+                s, synthetic_daily_bars(s, date(2025, 6, 2), 300, seed=i, drift=0.002), NOW)
+        rt.engine.load_daily_history("NIFTY50", synthetic_daily_bars(
+            "NIFTY50", date(2025, 6, 2), 300, seed=99, start_price=20000, drift=0.002), NOW)
+        r = c.post("/api/engine/scan", headers=H)
+        assert r.status_code == 200 and r.json()["ranked"] == 6
+        wl = c.get("/api/watchlist", headers=H).json()
+        assert len(wl["rows"]) == 6 and wl["bar_ts"]
+        statuses = {row["status"] for row in wl["rows"]}
+        assert statuses <= {"holding", "buy_candidate", "vetoed", "below_threshold",
+                            "no_signal", "not_enough_history"}
+        scores = [row["score"] for row in wl["rows"] if row["score"] is not None]
+        assert scores == sorted(scores, reverse=True)

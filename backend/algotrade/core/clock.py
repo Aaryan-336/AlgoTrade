@@ -57,6 +57,9 @@ class MarketCalendar:
     def __init__(self, holidays: Iterable[date] = ()) -> None:
         self.holidays = frozenset(holidays)
 
+    def add_holidays(self, days: Iterable[date]) -> None:
+        self.holidays = self.holidays | frozenset(days)
+
     def is_trading_day(self, d: date) -> bool:
         return d.weekday() < 5 and d not in self.holidays
 

@@ -133,6 +133,59 @@ class DecisionEngine:
                        expires_at, res, closes)
         return res
 
+    def rank(self, now: datetime, features: Mapping[str, FeatureSet],
+             positions: Mapping[str, Position], sentiment: Mapping[str, SentimentAggregate],
+             index_fs: FeatureSet | None, vix: float | None) -> list[dict[str, object]]:
+        """Score every symbol for the watchlist view. Read-only: no intents."""
+        cfg = self.cfg
+        regime_block, _ = self._regime(index_fs, vix, CycleResult())
+        today = to_ist(now).date()
+        out: list[dict[str, object]] = []
+        for sym, fs in features.items():
+            if len(fs) == 0:
+                continue
+            pos = positions.get(sym)
+            sent = sentiment.get(sym)
+            row: dict[str, object] = {"symbol": sym, "close": fs.close, "held": pos is not None,
+                                      "bar_ts": fs.last.ts}
+            if len(fs) < max(cfg.universe.min_history_bars, 30):
+                out.append({**row, "status": "not_enough_history", "score": None,
+                            "reason": f"only {len(fs)} days of history"})
+                continue
+            ctx = StrategyContext(now=now, holding=pos is not None,
+                                  entry_price=pos.avg_price if pos else None)
+            sigs = [s.evaluate(sym, fs, ctx) for s in self.strategies]
+            comps = components(fs, sent, cfg)
+            buys = [s for s in sigs if s.action == "BUY"]
+            sells = [s for s in sigs if s.action == "SELL"]
+            row.update(comps.as_dict())
+            row["sentiment_raw"] = sent.score if sent and not sent.missing else None
+            row["change_pct"] = ((fs.closes[-1] / fs.closes[-2] - 1) * 100
+                                 if len(fs) > 1 and fs.closes[-2] else None)
+            if pos is not None:
+                status, reason = "holding", (f"exit signal: {'; '.join(sells[0].reasons)}"
+                                             if sells else "trend intact")
+            elif not buys:
+                best_hold = max(sigs, key=lambda s: len(s.reasons), default=None)
+                status = "no_signal"
+                reason = "; ".join(best_hold.reasons[:2]) if best_hold else "no signal"
+            else:
+                veto = self._vetoes(sym, fs, sent, today, regime_block)
+                if veto:
+                    status, reason = "vetoed", veto
+                elif comps.score < cfg.decision.entry_threshold:
+                    status = "below_threshold"
+                    reason = f"score {comps.score:.2f} < {cfg.decision.entry_threshold}"
+                else:
+                    best = max(buys, key=lambda s: s.strength)
+                    status, reason = "buy_candidate", f"{best.strategy}: {'; '.join(best.reasons)}"
+                    row["stop"] = best.suggested_stop
+                    row["target"] = best.suggested_target
+                    row["strategy"] = best.strategy
+            out.append({**row, "status": status, "reason": reason})
+        out.sort(key=lambda r: (r.get("score") is None, -float(r.get("score") or 0)))  # type: ignore[arg-type]
+        return out
+
     # -------------------------------------------------------------- regime
     def _regime(self, index_fs: FeatureSet | None, vix: float | None,
                 res: CycleResult) -> tuple[str, float]:

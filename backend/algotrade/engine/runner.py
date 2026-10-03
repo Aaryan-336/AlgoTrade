@@ -97,7 +97,9 @@ class LiveRunner:
             eng = rt.engine
 
         ready = rt.provider.is_ready()
-        if ready and cal.is_trading_day(today) and self.history_loaded_for != today.isoformat():
+        # Load history whenever logged in, weekends and holidays included, so the
+        # bot can analyse the last close and show its plan before the next session.
+        if ready and self.history_loaded_for != today.isoformat():
             await self.load_history(now)
             eng = rt.engine
         elif (not ready and rt.fallback is not None and self.history_loaded_for == ""
@@ -145,6 +147,12 @@ class LiveRunner:
         prov = prov or rt.provider
         if isinstance(prov, UpstoxProvider):
             await prov.load_instruments(rt.universe.symbols)
+            try:
+                days = await prov.holidays()
+                rt.calendar.add_holidays(days)
+                rt.audit.record(now, "runner", "holidays.loaded", {"count": len(days)})
+            except ProviderError as exc:
+                log.warning("could not load exchange holidays: %s", exc)
         end = to_ist(now).date()
         start = end - timedelta(days=HISTORY_DAYS)
         loaded, failed = 0, []
@@ -165,6 +173,21 @@ class LiveRunner:
                                                           "failed": failed[:20]})
         if failed:
             rt.notifier.send(now, "warning", f"History failed for {len(failed)} symbols")
+        await self.catch_up_scan(now)
+
+    async def catch_up_scan(self, now: datetime) -> int:
+        """Analyse the latest completed bar now if no cycle has seen it yet, so the
+        bot's view is visible straight after login (e.g. on a weekend). It only
+        queues intents; each still faces the Risk Engine at the next session."""
+        eng = self.rt.engine
+        latest = eng.latest_bar_ts()
+        if latest is None or (eng.last_bar_ts is not None and eng.last_bar_ts >= latest):
+            if latest is not None and not eng.ranking:
+                eng.rank_now(now)
+            return 0
+        n = await eng.decision_cycle(now, latest)
+        self.rt.audit.record(now, "runner", "scan.catch_up", {"bar_ts": latest, "intents": n})
+        return n
 
     # --------------------------------------------------------- bar cycles
     async def maybe_bar_cycle(self, now: datetime) -> None:

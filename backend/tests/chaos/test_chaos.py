@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import timedelta
+from datetime import datetime, timedelta
 from decimal import Decimal
 
 import httpx
@@ -192,3 +192,39 @@ def test_history_fallback_while_upstox_logged_out() -> None:
     assert runner.history_source == "replay (delayed fallback)"
     assert runner.history_loaded_for == ""  # real Upstox history still loads after login
     assert rt.history_provider() is rt.fallback
+
+
+def test_holiday_with_no_prices_does_not_trip_stale_breaker(cfg: AppConfig, db: Database) -> None:
+    """No price at all today (exchange holiday / not logged in) is not a feed failure."""
+    eng = make_engine(cfg, db)
+    eng.price_ts.clear()
+    eng.prices.clear()
+    eng.check_breakers(NOW)
+    assert "stale_data" not in eng.breakers.tripped
+    # Orders are still blocked by the per-order freshness check.
+    eng.pending.append(entry_intent())
+    assert run(eng.execute_pending(NOW)) == []
+
+
+def test_weekend_login_loads_history_and_scans() -> None:
+    """Logging in on a Saturday analyses Friday's close straight away."""
+    from datetime import date
+
+    from algotrade.core.clock import IST
+    from algotrade.data.providers.replay import ReplayProvider, synthetic_daily_bars
+
+    saturday = datetime(2026, 9, 19, 12, 0, tzinfo=IST)
+    clock = ManualClock(saturday)
+    rt = Runtime(Settings(data_provider="replay", database_url="sqlite://"),
+                 db=Database("sqlite://"), clock=clock)
+    syms = rt.universe.symbols[:5]
+    bars = {s: synthetic_daily_bars(s, date(2025, 6, 2), 320, seed=i, drift=0.002)
+            for i, s in enumerate(syms)}
+    bars["NIFTY50"] = synthetic_daily_bars("NIFTY50", date(2025, 6, 2), 320, seed=9,
+                                           start_price=20000, drift=0.002, vol=0.005)
+    rt.provider = ReplayProvider(bars, clock)
+    runner = LiveRunner(rt)
+    run(runner.step(saturday))
+    assert runner.history_loaded_for == "2026-09-19"
+    assert rt.engine.last_bar_ts is not None  # catch-up scan ran on the last close
+    assert rt.engine.ranking and {r["symbol"] for r in rt.engine.ranking} <= set(syms)

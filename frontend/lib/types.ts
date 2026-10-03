@@ -212,3 +212,35 @@ export type Profile = {
 export type ProfilesResponse = { market_open: boolean; live_id: number | null; profiles: Profile[] };
 
 export type BacktestSummary = Omit<BacktestResult, "equity_curve" | "trades"> & { ts: string };
+
+export type WatchRow = {
+  symbol: string;
+  name: string;
+  sector: string;
+  ltp: number | null;
+  close: number;
+  change_pct: number | null;
+  held: boolean;
+  score: number | null;
+  trend?: number;
+  momentum?: number;
+  volume?: number;
+  sentiment?: number;
+  sentiment_raw?: number | null;
+  status: "holding" | "buy_candidate" | "vetoed" | "below_threshold" | "no_signal" | "not_enough_history";
+  reason: string;
+  stop?: number | null;
+  target?: number | null;
+  strategy?: string;
+};
+
+export type Watchlist = {
+  ranked_at: string | null;
+  bar_ts: string | null;
+  last_cycle: string | null;
+  regime: Status["regime"];
+  max_positions: number;
+  entry_threshold: number;
+  pending: Record<string, "BUY" | "SELL">;
+  rows: WatchRow[];
+};

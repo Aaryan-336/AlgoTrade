@@ -137,6 +137,8 @@ class TradingEngine:
         self.last_cycle: datetime | None = None
         self.last_bar_ts: datetime | None = None
         self.trades: list[ClosedTrade] = []
+        self.ranking: list[dict[str, Any]] = []
+        self.ranking_at: datetime | None = None
 
     # ============================================================ utilities
     def _audit(self, now: datetime, event: str, payload: dict[str, Any],
@@ -369,6 +371,27 @@ class TradingEngine:
             out[sym] = aggregate(sym, [i for i in items if i.symbol == sym], now, sc, move_since)
         self.sentiment = out
 
+    def latest_bar_ts(self) -> datetime | None:
+        """Timestamp of the newest completed decision bar across the universe."""
+        src = self.daily if self.cfg.strategy.timeframe == "1d" else self.intraday
+        stamps = [src[s][-1].ts for s in self.universe.symbols if src.get(s)]
+        return max(stamps) if stamps else None
+
+    def rank_now(self, now: datetime) -> list[dict[str, Any]]:
+        """Score every stock on its latest bar for the watchlist (read-only)."""
+        bar_ts = self.latest_bar_ts()
+        if bar_ts is None:
+            return []
+        self._load_sentiment(now)
+        idx_sym = self.cfg.strategy.regime.index_symbol
+        vix_bars = self.daily.get(self.cfg.strategy.regime.vix_symbol)
+        index_fs = FeatureSet(self.daily[idx_sym]) if self.daily.get(idx_sym) else None
+        self.ranking = self.decision.rank(now, self._features(bar_ts), self.portfolio.positions,
+                                          self.sentiment, index_fs,
+                                          float(vix_bars[-1].close) if vix_bars else None)
+        self.ranking_at = now
+        return self.ranking
+
     async def decision_cycle(self, now: datetime, bar_ts: datetime) -> int:
         """Run strategies on the latest completed bars and queue intents."""
         self._load_sentiment(now)
@@ -401,6 +424,10 @@ class TradingEngine:
         self.pending = [p for p in self.pending if (p.symbol, p.side) not in keys]
         self.pending.extend(res.intents)
         self.last_cycle, self.last_bar_ts = now, bar_ts
+        try:
+            self.rank_now(now)
+        except Exception:  # the watchlist view must never break a trading cycle
+            self.ranking = []
         if self.repo:
             self.repo.replace_positions(self.portfolio.positions.values())
         self._save_state(now)
@@ -609,6 +636,10 @@ class TradingEngine:
             self.marks.week_id = week_id
             self.marks.week_start = eq
         self.marks.peak = max(self.marks.peak, eq)
+        if "stale_data" in self.breakers.tripped:
+            self.breakers.reset("stale_data")  # a new session starts with a fresh feed check
+            self._audit(now, "breaker.reset", {"breaker": "stale_data", "note": "new day",
+                                               "actor": "auto"})
         if self.cfg.risk.breakers.daily_loss_auto_reset and "daily_loss" in self.breakers.tripped:
             self.breakers.reset("daily_loss")
             self._audit(now, "breaker.reset", {"breaker": "daily_loss", "note": "new day",
@@ -630,11 +661,15 @@ class TradingEngine:
         if self.calendar.is_open(now) and self.calendar.minutes_since_open(now) * 60 > \
                 rc.breakers.stale_data_halt_sec:
             newest = max(self.price_ts.values(), default=None)
+            session_open = self.calendar.session_bounds(to_ist(now).date())[0]
+            flowed_today = newest is not None and newest >= session_open
             age = (now - newest).total_seconds() if newest else float("inf")
-            if age > rc.breakers.stale_data_halt_sec:
-                why = (f"no fresh prices for {age:.0f}s" if newest
-                       else "no prices received yet: is the data feed connected?")
-                self.trip("stale_data", why, now)
+            # Trip only when a feed that was working today goes silent. If no price
+            # has arrived at all today (exchange holiday, not logged in), orders are
+            # already blocked by the per-order freshness check; a breaker would just
+            # be a false alarm that outlives the holiday.
+            if flowed_today and age > rc.breakers.stale_data_halt_sec:
+                self.trip("stale_data", f"no fresh prices for {age:.0f}s", now)
             elif "stale_data" in self.breakers.tripped:
                 self.breakers.reset("stale_data")
                 self._audit(now, "breaker.reset", {"breaker": "stale_data",

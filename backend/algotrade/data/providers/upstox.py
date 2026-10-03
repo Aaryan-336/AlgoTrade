@@ -225,6 +225,19 @@ class UpstoxProvider:
         return [b for b in _parse_candles(symbol, timeframe, body)
                 if b.ts + _TF_LEN[timeframe] <= now]
 
+    async def holidays(self) -> list[date]:
+        """NSE trading holidays for the current year (Upstox market-information API)."""
+        body = await self._get("/v2/market/holidays")
+        out: list[date] = []
+        for row in body.get("data") or []:
+            closed = row.get("closed_exchanges") or []
+            if row.get("holiday_type") == "TRADING_HOLIDAY" and "NSE" in closed:
+                try:
+                    out.append(date.fromisoformat(str(row.get("date"))[:10]))
+                except ValueError:
+                    continue
+        return out
+
     def health(self) -> ProviderHealth:
         connected = self.auth.token is not None and not self._last_error
         msg = self._last_error or ("ok" if self.auth.token else "not logged in")

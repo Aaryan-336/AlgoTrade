@@ -324,6 +324,45 @@ def create_app(settings: Settings | None = None, runtime: Runtime | None = None,
             raise HTTPException(404, "breaker not tripped")
         return build_status(rt, request.app.state.runner)
 
+    @app.post("/api/engine/scan", dependencies=guard)
+    async def engine_scan(request: Request) -> Any:
+        """Run the decision cycle on the latest completed bars right now."""
+        rt = rt_of(request)
+        eng = rt.engine
+        latest = eng.latest_bar_ts()
+        if latest is None:
+            raise HTTPException(409, "no price history loaded yet (log in to Upstox or wait "
+                                     "for the delayed history to load)")
+        now = rt.clock.now()
+        n = await eng.decision_cycle(now, latest)
+        rt.audit.record(now, "owner", "scan.manual", {"bar_ts": latest, "intents": n})
+        return j({"intents": n, "bar_ts": latest, "ranked": len(eng.ranking)})
+
+    @app.get("/api/watchlist", dependencies=guard)
+    async def watchlist(request: Request) -> Any:
+        """Every stock ranked by the bot's score, plus what it has picked."""
+        rt = rt_of(request)
+        eng = rt.engine
+        now = rt.clock.now()
+        if not eng.ranking:
+            eng.rank_now(now)
+        names = {i.symbol: (i.name, i.sector) for i in rt.universe.instruments()}
+        rows = []
+        for r in eng.ranking:
+            sym = str(r["symbol"])
+            live = eng.prices.get(sym)
+            rows.append({**r, "name": names.get(sym, (sym, ""))[0],
+                         "sector": names.get(sym, ("", "Unknown"))[1],
+                         "ltp": live if live is not None else r.get("close")})
+        pending = {i.symbol: i.side.value for i in eng.pending}
+        return j({
+            "ranked_at": eng.ranking_at, "bar_ts": eng.latest_bar_ts(),
+            "last_cycle": eng.last_cycle, "regime": eng.regime,
+            "max_positions": rt.config.risk.max_open_positions,
+            "entry_threshold": rt.config.strategy.decision.entry_threshold,
+            "pending": pending, "rows": rows,
+        })
+
     @app.post("/api/engine/{action}", dependencies=guard)
     async def engine_control(request: Request, action: str) -> Any:
         rt = rt_of(request)

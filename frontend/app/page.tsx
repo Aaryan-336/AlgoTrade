@@ -211,7 +211,7 @@ export default function Overview() {
           )}
         </Card>
 
-        <Card title="Next actions" pad={false}>
+        <Card title="Next actions" pad={false} action={<Link className="text-xs text-accent" href="/watchlist">Watchlist →</Link>}>
           {status.pending_intents.length === 0 ? (
             <Empty>No pending intents. Next decision after the {status.timeframe === "1d" ? "15:40 IST daily close" : "next 15-minute bar"}.</Empty>
           ) : (

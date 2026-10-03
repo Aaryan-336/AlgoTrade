@@ -10,6 +10,7 @@ import { TokenGate } from "./token-gate";
 
 const NAV = [
   { href: "/", label: "Overview" },
+  { href: "/watchlist", label: "Watchlist" },
   { href: "/chart", label: "Chart" },
   { href: "/positions", label: "Positions & orders" },
   { href: "/decisions", label: "Decisions" },
