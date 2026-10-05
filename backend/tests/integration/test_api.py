@@ -1,0 +1,213 @@
+from __future__ import annotations
+
+from datetime import timedelta
+
+from fastapi.testclient import TestClient
+from pydantic import SecretStr
+
+from algotrade.api.main import create_app
+from algotrade.config.settings import Settings
+from algotrade.core.clock import ManualClock
+from algotrade.db.session import Database
+from algotrade.engine.runtime import Runtime
+from tests.conftest import NOW, SESSION_DAY, ist
+
+
+def client(clock: ManualClock, token: str | None = "t0ken") -> TestClient:
+    settings = Settings(data_provider="replay", database_url="sqlite://",
+                        api_token=SecretStr(token) if token else None)
+    rt = Runtime(settings, db=Database("sqlite://"), clock=clock)
+    return TestClient(create_app(settings, rt, autostart=False))
+
+
+H = {"Authorization": "Bearer t0ken"}
+
+
+def test_auth_required_and_status() -> None:
+    with client(ManualClock(NOW)) as c:
+        assert c.get("/api/health").status_code == 200
+        assert c.get("/api/status").status_code == 401
+        s = c.get("/api/status", headers=H).json()
+        assert s["mode"] == "PAPER" and s["equity"] == 5000.0
+        assert s["provider"]["name"] == "replay"
+        for path in ("portfolio", "orders", "decisions", "risk-events", "universe", "news",
+                     "config", "trades", "equity", "backtests", "audit"):
+            assert c.get(f"/api/{path}", headers=H).status_code == 200, path
+
+
+def test_kill_switch_and_breaker_endpoints() -> None:
+    with client(ManualClock(NOW)) as c:
+        r = c.post("/api/kill-switch", json={"action": "block", "reason": "testing"},
+                   headers=H)
+        assert r.json()["kill_switch"]["active"] is True
+        assert c.post("/api/kill-switch", json={"action": "nuke", "reason": "x"},
+                      headers=H).status_code == 422
+        r = c.post("/api/kill-switch/release", json={"note": "all good"}, headers=H)
+        assert r.json()["kill_switch"]["active"] is False
+        assert c.post("/api/breakers/drawdown/reset", json={"note": "nothing tripped"},
+                      headers=H).status_code == 404
+        assert c.get("/api/audit/verify", headers=H).json()["ok"] is True
+
+
+def test_config_locked_during_market_hours_and_validated() -> None:
+    clock = ManualClock(NOW)  # 11:00 IST on a trading day
+    with client(clock) as c:
+        cfg = c.get("/api/config", headers=H).json()
+        body = {"risk": cfg["risk"], "strategy": cfg["strategy"], "reason": "tweak"}
+        assert c.put("/api/config", json=body, headers=H).status_code == 409
+        clock.set(ist(SESSION_DAY, 18, 0))
+        bad = {**body, "risk": {**cfg["risk"], "risk_per_trade_pct": 9}}
+        assert c.put("/api/config", json=bad, headers=H).status_code == 422
+        ok = c.put("/api/config", json=body, headers=H)
+        assert ok.status_code == 200 and ok.json()["version"] == 2
+
+
+def test_upstox_login_requires_configuration_and_valid_state() -> None:
+    with client(ManualClock(NOW + timedelta(hours=10)), token=None) as c:
+        assert c.get("/api/auth/upstox/login", follow_redirects=False).status_code == 400
+        assert c.get("/api/auth/upstox/callback?code=x&state=forged").status_code == 400
+
+
+def test_backtest_needs_ready_provider_or_data() -> None:
+    with client(ManualClock(NOW)) as c:
+        r = c.post("/api/backtest", json={"start": "2025-01-01", "end": "2025-06-01"},
+                   headers=H)
+        assert r.status_code == 502  # replay provider has no data loaded
+
+
+def test_backtest_accepts_unsaved_settings_during_market_hours() -> None:
+    with client(ManualClock(NOW)) as c:  # market open
+        cfg = c.get("/api/config", headers=H).json()
+        bad = {"start": "2025-01-01", "end": "2025-06-01",
+               "risk": {**cfg["risk"], "risk_per_trade_pct": 9}, "strategy": cfg["strategy"]}
+        assert c.post("/api/backtest", json=bad, headers=H).status_code == 422
+        trend = {**cfg["strategy"]["strategies"]["trend"], "fast_ema": 50, "slow_ema": 200}
+        strategy = {**cfg["strategy"],
+                    "strategies": {**cfg["strategy"]["strategies"], "trend": trend}}
+        ok = {"start": "2025-01-01", "end": "2025-06-01", "risk": cfg["risk"],
+              "strategy": strategy}
+        # Passes validation; fails only because the replay provider has no data.
+        assert c.post("/api/backtest", json=ok, headers=H).status_code == 502
+        # The live config is untouched.
+        assert c.get("/api/config", headers=H).json()["latest_version"] == 1
+
+
+def test_strategy_versions_lock_live_version_during_market_hours() -> None:
+    clock = ManualClock(NOW)  # 11:00 IST, market open
+    with client(clock) as c:
+        view = c.get("/api/profiles", headers=H).json()
+        assert view["market_open"] and len(view["profiles"]) == 1
+        default = view["profiles"][0]
+        assert default["name"] == "Default" and default["is_live"]
+        body = {"name": "Slow momentum", "description": "test",
+                "risk": default["risk"], "strategy": default["strategy"]}
+        # Creating and editing a non-live version is fine while the market is open.
+        new_id = c.post("/api/profiles", json=body, headers=H).json()["id"]
+        assert c.put(f"/api/profiles/{new_id}", json={**body, "description": "v2"},
+                     headers=H).status_code == 200
+        assert c.post("/api/profiles", json=body, headers=H).status_code == 422  # dup name
+        # The live version and the live switch are frozen.
+        live_body = {**body, "name": "Default"}
+        assert c.put(f"/api/profiles/{default['id']}", json=live_body,
+                     headers=H).status_code == 409
+        assert c.post(f"/api/profiles/{new_id}/activate", headers=H).status_code == 409
+        assert c.delete(f"/api/profiles/{default['id']}", headers=H).status_code == 409
+        # Backtesting any version is allowed (fails only for lack of data here).
+        r = c.post("/api/backtest", json={"start": "2025-01-01", "end": "2025-06-01",
+                                          "profile_id": new_id}, headers=H)
+        assert r.status_code == 502
+        # After the close: switch live version, then the old one can be deleted.
+        clock.set(ist(SESSION_DAY, 18, 0))
+        r = c.post(f"/api/profiles/{new_id}/activate", headers=H)
+        assert r.status_code == 200 and r.json()["live_id"] == new_id
+        assert c.get("/api/status", headers=H).json()["config_version"] == 2
+        assert c.delete(f"/api/profiles/{default['id']}", headers=H).status_code == 200
+        assert c.delete(f"/api/profiles/{new_id}", headers=H).status_code == 409  # live
+
+
+def test_backtest_history_list_detail_delete() -> None:
+    from datetime import UTC, datetime
+
+    with client(ManualClock(NOW)) as c:
+        rt = c.app.state.rt  # type: ignore[attr-defined]
+        rid = rt.repo.save_backtest(datetime.now(UTC), {"version_name": "Slow momentum"},
+                                    {"total_return_pct": 12.5}, [{"date": "2020-01-01",
+                                                                  "equity": 1.0}], [])
+        listing = c.get("/api/backtests", headers=H).json()
+        assert listing[0]["id"] == rid and "equity_curve" not in listing[0]
+        detail = c.get(f"/api/backtests/{rid}", headers=H).json()
+        assert detail["equity_curve"] and detail["params"]["version_name"] == "Slow momentum"
+        assert c.delete(f"/api/backtests/{rid}", headers=H).status_code == 200
+        assert c.get(f"/api/backtests/{rid}", headers=H).status_code == 404
+
+
+def test_watchlist_and_scan_endpoints() -> None:
+    from datetime import date
+
+    from algotrade.data.providers.replay import synthetic_daily_bars
+
+    with client(ManualClock(NOW)) as c:
+        assert c.post("/api/engine/scan", headers=H).status_code == 409  # no history yet
+        rt = c.app.state.rt  # type: ignore[attr-defined]
+        for i, s in enumerate(rt.universe.symbols[:6]):
+            rt.engine.load_daily_history(
+                s, synthetic_daily_bars(s, date(2025, 6, 2), 300, seed=i, drift=0.002), NOW)
+        rt.engine.load_daily_history("NIFTY50", synthetic_daily_bars(
+            "NIFTY50", date(2025, 6, 2), 300, seed=99, start_price=20000, drift=0.002), NOW)
+        r = c.post("/api/engine/scan", headers=H)
+        assert r.status_code == 200 and r.json()["ranked"] == 6
+        wl = c.get("/api/watchlist", headers=H).json()
+        assert len(wl["rows"]) == 6 and wl["bar_ts"]
+        statuses = {row["status"] for row in wl["rows"]}
+        assert statuses <= {"holding", "buy_candidate", "vetoed", "below_threshold",
+                            "no_signal", "not_enough_history"}
+        scores = [row["score"] for row in wl["rows"] if row["score"] is not None]
+        assert scores == sorted(scores, reverse=True)
+
+
+def test_market_insights_health_and_activity() -> None:
+    from datetime import date
+
+    from algotrade.data.providers.replay import synthetic_daily_bars
+
+    with client(ManualClock(NOW)) as c:
+        empty = c.get("/api/market", headers=H).json()
+        assert empty["index"] is None and empty["breadth"] is None
+        health = c.get("/api/status", headers=H).json()["health"]
+        assert health["verdict"] == "stopped"  # engine not started in tests
+        keys = [s["key"] for s in health["steps"]]
+        assert keys == ["engine", "prices", "history", "news", "decision", "execution",
+                        "safety"]
+
+        rt = c.app.state.rt  # type: ignore[attr-defined]
+        for i, s in enumerate(rt.universe.symbols[:8]):
+            rt.engine.load_daily_history(
+                s, synthetic_daily_bars(s, date(2025, 3, 3), 300, seed=i, drift=0.002), NOW)
+        rt.engine.load_daily_history("NIFTY50", synthetic_daily_bars(
+            "NIFTY50", date(2025, 3, 3), 300, seed=99, start_price=20000, drift=0.002), NOW)
+        rt.engine.load_daily_history("INDIAVIX", synthetic_daily_bars(
+            "INDIAVIX", date(2025, 3, 3), 300, seed=98, start_price=14), NOW)
+        m = c.get("/api/market", headers=H).json()
+        assert m["index"]["ema"] is not None and len(m["index"]["spark"]) == 90
+        assert m["vix"]["last"] > 0
+        b = m["breadth"]
+        assert b["advancers"] + b["decliners"] + b["unchanged"] == b["total"] == 8
+        assert sum(s["count"] for s in m["sectors"]) == 8
+        assert all(g["change_pct"] > 0 for g in m["gainers"])
+
+        assert c.post("/api/engine/scan", headers=H).status_code == 200
+        feed = c.get("/api/activity", headers=H).json()
+        assert feed and feed[0]["kind"] == "decision" and "Scored 8 stocks" in feed[0]["text"]
+        steps = {s["key"]: s for s in c.get("/api/status", headers=H).json()["health"]["steps"]}
+        assert steps["decision"]["last"] and steps["decision"]["next"]
+        assert "8/" in steps["history"]["detail"]
+
+
+def test_describe_hides_noise_and_explains_trades() -> None:
+    from algotrade.engine.insights import describe
+
+    assert describe("order.acknowledged", "oms", {}) is None
+    kind, level, text = describe("fill", "engine", {"symbol": "INFY", "side": "SELL", "qty": 3,
+                                                    "price": 1500, "charges": 18.2,
+                                                    "purpose": "protective_stop"}) or ("", "", "")
+    assert kind == "trade" and level == "warning" and "stop-loss hit" in text

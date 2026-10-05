@@ -1,0 +1,76 @@
+[project]
+name = "algotrade"
+version = "0.1.0"
+description = "Personal algo trading bot for NSE/BSE. Paper mode first."
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    # API server and validation
+    "fastapi==0.118.0",
+    "uvicorn[standard]==0.37.0",
+    "pydantic==2.11.9",
+    "pydantic-settings==2.11.0",
+    # Persistence and migrations
+    "sqlalchemy==2.0.43",
+    "alembic==1.16.5",
+    "psycopg[binary]==3.2.10",
+    # HTTP client for Upstox and Groq (no vendor SDKs needed)
+    "httpx==0.28.1",
+    # RSS parsing for news ingestion
+    "feedparser==6.0.12",
+    # Config files
+    "pyyaml==6.0.3",
+    # Timezone data for Asia/Kolkata on slim images
+    "tzdata==2025.2",
+]
+
+[project.optional-dependencies]
+# Free, delayed data for research and backtests only; never for live decisions.
+research = ["yfinance==0.2.66"]
+dev = [
+    "pytest==8.4.2",
+    "pytest-cov==7.0.0",
+    "hypothesis==6.140.2",
+    "ruff==0.13.2",
+    "mypy==1.18.2",
+    "types-PyYAML==6.0.12.20250915",
+]
+
+[project.scripts]
+algotrade-api = "algotrade.api.main:run"
+algotrade-watchdog = "algotrade.watchdog.main:run"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["algotrade*"]
+
+[tool.setuptools.package-data]
+algotrade = ["config/*.yaml", "data/*.json", "db/migrations/*.py", "db/migrations/*.mako", "db/migrations/versions/*.py"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+extend-exclude = ["algotrade/db/migrations/versions"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF"]
+ignore = ["RUF001", "RUF002", "RUF003"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+packages = ["algotrade"]
+exclude = ["algotrade/db/migrations/"]
+plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+module = ["feedparser", "yfinance"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = [
+    "ignore:Dialect sqlite\\+pysqlite does \\*not\\* support Decimal objects natively",
+]

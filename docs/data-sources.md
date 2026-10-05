@@ -74,8 +74,10 @@ Optional, slow-moving inputs (valuation, growth, promoter holding, pledging). So
 - Ticks: not stored long term unless needed for replay tests; if stored, compress and rotate.
 - News: store metadata and the model's structured output; keep raw text only as long as needed and permitted.
 
-## 9. Open decisions
+## 9. Decisions taken (2026-09-30)
 
-1. Which paper-phase feed: a free broker API or delayed public data? Decide in P1.
-2. Whether to pay for Kite's data plan before `LIVE_APPROVAL`. Needed for real-time live data; verify current pricing and terms.
-3. Whether any strategy needs option-chain history (P5), and the cost of that data.
+1. **Paper-phase feed: Upstox API** (free with an Upstox account). Polled REST: LTP every few seconds for fills, stops and staleness; completed candles for decisions. Login once a day through the dashboard (OAuth); the token is held in memory only.
+2. **Kite for live, at ₹0:** Kite Connect *Personal* is free for orders but has no market data; the paid Connect plan (₹500/month, verify) adds data. Plan: keep Upstox as the data source and use free Kite Personal for orders in P4, unless one-vendor data + execution is preferred.
+3. **Moneycontrol:** used only through its official RSS feeds for news. No scraping and no unofficial price endpoints.
+4. **yfinance:** research and backtests only. Its ticks are stamped with their real (delayed) time, so the staleness check blocks trading on it.
+5. Option-chain history (P5): still open.

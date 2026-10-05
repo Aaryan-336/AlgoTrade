@@ -1,0 +1,347 @@
+"""Live paper-trading loop (docs/runbook.md §1 schedule, automated).
+
+Every ``poll_interval_sec``: heartbeat, kill-switch sync, prices, fills,
+pending intents, breakers. On bar close: fetch completed bars and run a
+decision cycle. News runs on its own timer in the background. Any
+unexpected exception trips the ``unhandled_exception`` breaker and the loop
+keeps running in a halted state so the dashboard and stops stay alive.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import traceback
+from datetime import datetime, time, timedelta
+from typing import Any
+
+from algotrade.core.clock import IST, to_ist
+from algotrade.data.providers.base import MarketDataProvider, ProviderError
+from algotrade.data.providers.upstox import UpstoxProvider
+from algotrade.engine.briefs import HealthWatch, evening_brief, morning_brief
+from algotrade.engine.runtime import Runtime
+
+log = logging.getLogger("algotrade.runner")
+HISTORY_DAYS = 420
+DAILY_CYCLE_AT = time(15, 40)
+MORNING_BRIEF_AT = time(9, 0)
+EVENING_BRIEF_AT = time(15, 50)
+LIVE_CANDLE_EVERY = timedelta(minutes=5)
+
+
+class LiveRunner:
+    def __init__(self, rt: Runtime) -> None:
+        self.rt = rt
+        self.running = False
+        self._task: asyncio.Task[None] | None = None
+        self._news_task: asyncio.Task[Any] | None = None
+        self.history_loaded_for: str = ""
+        self.fallback_loaded_for: str = ""
+        self.history_source: str = ""
+        self._history_task: asyncio.Task[None] | None = None
+        self.daily_cycle_done_for: str = ""
+        self.last_intraday_bar: datetime | None = None
+        self.last_housekeeping: datetime | None = None
+        self.last_news: datetime | None = None
+        self.last_error: str = ""
+        self.last_tick_count = 0
+        self.health_watch = HealthWatch()
+        self._candle_task: asyncio.Task[None] | None = None
+        self.last_live_candles: datetime | None = None
+        self._ping_task: asyncio.Task[None] | None = None
+
+    # ------------------------------------------------------------ control
+    async def start(self) -> None:
+        if self.running:
+            return
+        await self.rt.engine.resolve_uncertain(self.rt.clock.now())
+        self.running = True
+        self._task = asyncio.create_task(self._loop(), name="engine-loop")
+
+    async def stop(self) -> None:
+        self.running = False
+        for t in (self._task, self._news_task, self._history_task, self._ping_task,
+                  self._candle_task):
+            if t:
+                t.cancel()
+        self._task = None
+
+    @property
+    def symbols(self) -> list[str]:
+        eng = self.rt.engine
+        held = list(eng.portfolio.positions)
+        extra = [self.rt.config.strategy.regime.index_symbol,
+                 self.rt.config.strategy.regime.vix_symbol]
+        return sorted(set(self.rt.universe.symbols) | set(held) | set(extra))
+
+    # --------------------------------------------------------------- loop
+    async def _loop(self) -> None:
+        while self.running:
+            now = self.rt.clock.now()
+            try:
+                await self.step(now)
+                self.last_error = ""
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self.last_error = f"{type(exc).__name__}: {exc}"
+                log.error("engine step failed\n%s", traceback.format_exc())
+                try:
+                    self.rt.engine.trip("unhandled_exception", self.last_error[:200], now)
+                except Exception:  # never let the loop die; the halt is in memory
+                    log.critical("could not record breaker\n%s", traceback.format_exc())
+            await asyncio.sleep(self.rt.settings.poll_interval_sec)
+
+    async def step(self, now: datetime) -> None:
+        rt = self.rt
+        eng = rt.engine
+        rt.repo.set_state("engine_heartbeat", {"ts": now.isoformat(), "running": True}, now)
+        eng.sync_kill_from_db()
+        cal = rt.calendar
+        local = to_ist(now)
+        today = local.date()
+        market_open = cal.is_open(now)
+
+        if not market_open and rt.reload_config():
+            eng = rt.engine
+
+        ready = rt.provider.is_ready()
+        # Load history whenever logged in, weekends and holidays included, so the
+        # bot can analyse the last close and show its plan before the next session.
+        if ready and self.history_loaded_for != today.isoformat():
+            await self.load_history(now)
+            eng = rt.engine
+        elif (not ready and rt.fallback is not None and self.history_loaded_for == ""
+              and self.fallback_loaded_for != today.isoformat()
+              and (self._history_task is None or self._history_task.done())):
+            # Display-only history in the background so the heartbeat keeps ticking.
+            self.fallback_loaded_for = today.isoformat()
+            self._history_task = asyncio.create_task(
+                self.load_history(now, rt.fallback, mark_loaded=False), name="history-fallback")
+        if cal.is_trading_day(today) and local.time() >= time(9, 0):
+            eng.mark_session(now)
+
+        if ready and market_open:
+            try:
+                ticks = await rt.provider.ltp(self.symbols)
+            except ProviderError as exc:
+                ticks = []
+                self.last_error = str(exc)
+            self.last_tick_count = len(ticks)
+            for t in ticks:
+                eng.on_tick(t, now)
+            await eng.process_fills(now)
+
+        await eng.execute_pending(now)
+        await eng.process_fills(now)
+
+        if ready and cal.is_trading_day(today):
+            await self.maybe_bar_cycle(now)
+
+        if self.last_housekeeping is None or now - self.last_housekeeping >= timedelta(seconds=60):
+            self.last_housekeeping = now
+            if market_open:
+                eng.check_breakers(now)
+            await eng.reconcile(now)
+            if market_open or local.time() < time(16, 0):
+                eng.snapshot_equity(now)
+            if cal.is_trading_day(today) and time(9, 15) <= local.time() <= time(15, 30):
+                self.health_watch.check(rt, self, now)
+            if market_open and ready:
+                self.maybe_refresh_live_candles(now)
+                try:
+                    eng.rank_live(now)
+                except Exception:  # the live view must never disturb trading
+                    log.warning("live re-score failed\n%s", traceback.format_exc())
+            self.maybe_send_briefs(now)
+            self.ping_healthcheck()
+
+        self.maybe_start_news(now)
+        await rt.notifier.flush()
+
+    # ------------------------------------------------------------- alerts
+    def maybe_send_briefs(self, now: datetime) -> None:
+        """Morning readiness check and after-close summary, once per trading day."""
+        rt = self.rt
+        local = to_ist(now)
+        today = local.date()
+        if not rt.settings.daily_briefs or not rt.calendar.is_trading_day(today):
+            return
+        sent = rt.repo.get_state("briefs") or {}
+        day = today.isoformat()
+        if sent.get("morning") != day and MORNING_BRIEF_AT <= local.time() < time(15, 30):
+            level, text = morning_brief(rt, self, now)
+            rt.notifier.send(now, level, text)
+            sent["morning"] = day
+            rt.repo.set_state("briefs", sent, now)
+        cycle_done = self.daily_cycle_done_for == day or local.time() >= time(16, 30)
+        if sent.get("evening") != day and local.time() >= EVENING_BRIEF_AT and cycle_done:
+            rt.notifier.send(now, "info", evening_brief(rt, now))
+            sent["evening"] = day
+            rt.repo.set_state("briefs", sent, now)
+
+    def maybe_refresh_live_candles(self, now: datetime) -> None:
+        """Every 5 minutes, pull today's forming daily candle (true open, high, low
+        and volume so far) in the background. Ticks keep the close current."""
+        if self._candle_task and not self._candle_task.done():
+            return
+        if self.last_live_candles and now - self.last_live_candles < LIVE_CANDLE_EVERY:
+            return
+        self.last_live_candles = now
+
+        async def fetch() -> None:
+            rt = self.rt
+            day = rt.engine._day_ts(now)
+            for sym in self.symbols:
+                try:
+                    bars = await rt.provider.intraday(sym, "1d")
+                except ProviderError:
+                    continue
+                if bars and bars[-1].ts == day:
+                    rt.engine.merge_live_candle(bars[-1])
+
+        self._candle_task = asyncio.create_task(fetch(), name="live-candles")
+
+    def ping_healthcheck(self) -> None:
+        """Dead-man's switch: if these pings stop, the monitor alerts you."""
+        url = self.rt.settings.healthcheck_ping_url
+        if not url or (self._ping_task and not self._ping_task.done()):
+            return
+
+        async def ping() -> None:
+            try:
+                await self.rt.http.get(url, timeout=10)
+            except Exception as exc:  # monitoring must never disturb trading
+                log.warning("healthcheck ping failed: %s", type(exc).__name__)
+
+        self._ping_task = asyncio.create_task(ping(), name="healthcheck-ping")
+
+    # ------------------------------------------------------------ history
+    async def load_history(self, now: datetime, prov: MarketDataProvider | None = None,
+                           mark_loaded: bool = True) -> None:
+        rt = self.rt
+        prov = prov or rt.provider
+        if isinstance(prov, UpstoxProvider):
+            await prov.load_instruments(rt.universe.symbols)
+            try:
+                days = await prov.holidays()
+                rt.calendar.add_holidays(days)
+                rt.audit.record(now, "runner", "holidays.loaded", {"count": len(days)})
+            except ProviderError as exc:
+                log.warning("could not load exchange holidays: %s", exc)
+        end = to_ist(now).date()
+        start = end - timedelta(days=HISTORY_DAYS)
+        loaded, failed = 0, []
+        for sym in self.symbols:
+            try:
+                bars = await prov.history(sym, "1d", start, end)
+            except ProviderError as exc:
+                failed.append(f"{sym}: {exc}")
+                continue
+            # Keep only completed sessions (today's bar arrives after the close).
+            bars = [b for b in bars if b.ts + timedelta(hours=15, minutes=30) <= now]
+            if not bars:  # never replace good history with an empty answer
+                failed.append(f"{sym}: no bars returned")
+                continue
+            loaded += rt.engine.load_daily_history(sym, bars, now) > 0
+        if mark_loaded:
+            self.history_loaded_for = to_ist(now).date().isoformat()
+        self.history_source = prov.name if mark_loaded else f"{prov.name} (delayed fallback)"
+        rt.audit.record(now, "runner", "history.loaded", {"symbols": loaded,
+                                                          "source": self.history_source,
+                                                          "failed": failed[:20]})
+        if failed:
+            rt.notifier.send(now, "warning", f"History failed for {len(failed)} symbols")
+        await self.catch_up_scan(now)
+
+    async def catch_up_scan(self, now: datetime) -> int:
+        """Analyse the latest completed bar now if no cycle has seen it yet, so the
+        bot's view is visible straight after login (e.g. on a weekend). It only
+        queues intents; each still faces the Risk Engine at the next session."""
+        eng = self.rt.engine
+        latest = eng.latest_bar_ts()
+        if latest is None or (eng.last_bar_ts is not None and eng.last_bar_ts >= latest):
+            if latest is not None and not eng.ranking:
+                eng.rank_now(now)
+            return 0
+        n = await eng.decision_cycle(now, latest)
+        self.rt.audit.record(now, "runner", "scan.catch_up", {"bar_ts": latest, "intents": n})
+        return n
+
+    # --------------------------------------------------------- bar cycles
+    async def maybe_bar_cycle(self, now: datetime) -> None:
+        rt = self.rt
+        local = to_ist(now)
+        tf = rt.config.strategy.timeframe
+        if tf == "1d":
+            done = self.daily_cycle_done_for == local.date().isoformat()
+            if local.time() < DAILY_CYCLE_AT or done:
+                return
+            bar_ts = datetime.combine(local.date(), time(0, 0), tzinfo=IST)
+            got = await self._fetch_bars("1d", now)
+            if got == 0:
+                return  # try again next loop; the provider may still be publishing
+            self.daily_cycle_done_for = local.date().isoformat()
+            await rt.engine.decision_cycle(now, bar_ts.astimezone(now.tzinfo))
+            return
+        # 15-minute bars: run once per completed bar, 20s after it closes.
+        if not rt.calendar.is_open(now - timedelta(seconds=20)):
+            return
+        minutes = (local.hour * 60 + local.minute - 15) // 15 * 15 + 15
+        boundary = local.replace(hour=minutes // 60, minute=minutes % 60, second=0,
+                                 microsecond=0)
+        bar_ts = boundary - timedelta(minutes=15)
+        if self.last_intraday_bar and bar_ts <= self.last_intraday_bar:
+            return
+        if (local - boundary).total_seconds() < 20:
+            return
+        if await self._fetch_bars("15m", now) == 0:
+            return
+        self.last_intraday_bar = bar_ts
+        await rt.engine.decision_cycle(now, bar_ts)
+
+    async def _fetch_bars(self, timeframe: str, now: datetime) -> int:
+        rt = self.rt
+        n = 0
+        today = to_ist(now).date()
+        for sym in self.symbols:
+            try:
+                bars = await rt.provider.intraday(sym, timeframe)
+                if not bars and timeframe == "1d":
+                    bars = await rt.provider.history(sym, "1d", today, today)
+            except ProviderError:
+                continue
+            if bars and rt.engine.append_bar(bars[-1], now):
+                n += 1
+        return n
+
+    # ---------------------------------------------------------------- news
+    def maybe_start_news(self, now: datetime) -> None:
+        interval = timedelta(minutes=self.rt.settings.news_interval_min)
+        if self._news_task and not self._news_task.done():
+            return
+        if self.last_news and now - self.last_news < interval:
+            return
+        if not self.rt.config.strategy.sentiment.enabled:
+            return
+        self.last_news = now
+        self._news_task = asyncio.create_task(self._news(now), name="news")
+
+    async def _news(self, now: datetime) -> None:
+        rt = self.rt
+        try:
+            await rt.news.run(rt.universe.instruments(), now, rt.config.strategy.sentiment)
+            # Bad news on a holding: queue the exit now, not at the next close.
+            rt.engine.news_exits(rt.clock.now())
+        except Exception as exc:  # news must never break trading
+            log.warning("news cycle failed: %s", exc)
+            rt.notifier.send(now, "warning", f"News cycle failed: {type(exc).__name__}")
+
+    def status(self) -> dict[str, Any]:
+        return {"running": self.running, "last_error": self.last_error,
+                "live_ranking_at": self.rt.engine.live_ranking_at,
+                "history_loaded_for": self.history_loaded_for,
+                "history_source": self.history_source,
+                "daily_cycle_done_for": self.daily_cycle_done_for,
+                "last_tick_count": self.last_tick_count,
+                "last_news": self.last_news}
