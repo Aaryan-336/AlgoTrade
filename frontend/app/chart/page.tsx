@@ -4,10 +4,12 @@ import { useQuery } from "@tanstack/react-query";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useMemo, useState } from "react";
 import { CandleChart, type Candle, type FillMark } from "@/components/charts";
+import { LiveChange, LivePrice, useLivePrice } from "@/components/live-price";
 import { AdvancedChart } from "@/components/tradingview";
 import { Badge, Card, Empty, ErrorNote, PageHeader } from "@/components/ui";
 import { api } from "@/lib/api";
-import { money, pct, tone } from "@/lib/format";
+import { ago, money, tone } from "@/lib/format";
+import { useLive, useLiveInterval } from "@/lib/live";
 import type { UniverseRow } from "@/lib/types";
 
 type BarsResponse = {
@@ -15,21 +17,25 @@ type BarsResponse = {
   bars: Candle[];
   fills: FillMark[];
   position: { avg_price: number; stop: number | null; target: number | null; qty: number } | null;
+  live?: boolean;
 };
 
 function ChartView() {
   const params = useSearchParams();
   const router = useRouter();
-  const universe = useQuery({ queryKey: ["universe"], queryFn: () => api<UniverseRow[]>("/api/universe"), refetchInterval: 15_000 });
+  const fast = useLiveInterval(15_000);
+  const { status } = useLive();
+  const universe = useQuery({ queryKey: ["universe"], queryFn: () => api<UniverseRow[]>("/api/universe"), refetchInterval: fast });
   const symbol = params.get("symbol") ?? universe.data?.find((u) => u.held)?.symbol ?? universe.data?.[0]?.symbol ?? "";
   const [view, setView] = useState<"bot" | "tradingview">("bot");
   const bars = useQuery({
     queryKey: ["bars", symbol],
     queryFn: () => api<BarsResponse>(`/api/bars/${encodeURIComponent(symbol)}?timeframe=1d&limit=260`),
     enabled: !!symbol,
-    refetchInterval: 30_000,
+    refetchInterval: fast,
   });
   const row = universe.data?.find((u) => u.symbol === symbol);
+  const live = useLivePrice(symbol, { ltp: row?.ltp, chg: row?.change_pct });
   const sorted = useMemo(
     () => [...(universe.data ?? [])].sort((a, b) => Number(b.held) - Number(a.held) || a.symbol.localeCompare(b.symbol)),
     [universe.data],
@@ -68,9 +74,15 @@ function ChartView() {
         <Card className="xl:col-span-3" pad={false}>
           <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1 border-b border-line px-4 py-3">
             <span className="text-[15px] font-semibold">{symbol}</span>
-            <span className="num text-[15px]">{money(row?.ltp)}</span>
-            <span className={`num text-[13px] ${tone(row?.change_pct)}`}>{pct(row?.change_pct, 2, true)}</span>
+            <LivePrice value={live.ltp} className="text-[15px]" />
+            <LiveChange value={live.chg} className="text-[13px]" />
             {row?.held && <Badge tone="accent">Held</Badge>}
+            {view === "bot" && status?.market_open && bars.data?.live && (
+              <span className="flex items-center gap-1.5 text-[11px] text-muted">
+                <span className="h-1.5 w-1.5 rounded-full bg-pos motion-safe:animate-pulse" />
+                Today&apos;s candle is live · price {ago(live.ts)}
+              </span>
+            )}
             {view === "tradingview" && <span className="ml-auto text-[11px] text-muted">TradingView widget · display only, not used for decisions</span>}
           </div>
           <div className="p-2">
@@ -85,6 +97,7 @@ function ChartView() {
                 entry={bars.data.position?.avg_price}
                 stop={bars.data.position?.stop}
                 target={bars.data.position?.target}
+                livePrice={bars.data.live ? live.ltp : null}
               />
             ) : (
               <Empty>No bars yet for {symbol}. History loads after you connect the data feed.</Empty>

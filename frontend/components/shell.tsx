@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { money, signedMoney, tone } from "@/lib/format";
 import { useLive } from "@/lib/live";
 import { KillSwitchButton } from "./kill-switch";
@@ -29,7 +29,13 @@ function Dot({ ok, warn = false }: { ok: boolean; warn?: boolean }) {
 
 export function Shell({ children }: { children: ReactNode }) {
   const path = usePathname();
-  const { status, error } = useLive();
+  const { status, error, connected, updatedAt } = useLive();
+  const [, tick] = useState(0);
+  useEffect(() => {
+    const t = setInterval(() => tick((x) => x + 1), 1000);
+    return () => clearInterval(t);
+  }, []);
+  const age = updatedAt ? Math.max(0, Math.round((Date.now() - updatedAt) / 1000)) : null;
   const [open, setOpen] = useState(false);
 
   const feedOk = !!status?.provider.connected;
@@ -71,6 +77,15 @@ export function Shell({ children }: { children: ReactNode }) {
                 ? [status.provider.name, status.provider.message].filter(Boolean).join(" · ")
                 : "connecting…"}
             </span>
+            {status && (
+              <span
+                className="flex items-center gap-1.5"
+                title={connected ? "Streaming over WebSocket" : "Live stream reconnecting; polling every 5s meanwhile"}
+              >
+                <Dot ok={connected && age !== null && age < 10} warn />
+                {connected ? `Live · ${age ?? "—"}s` : "Reconnecting…"}
+              </span>
+            )}
             {status?.health && (
               <Link href="/" className="flex items-center gap-1.5 hover:text-ink" title={status.health.headline}>
                 <Dot ok={status.health.verdict === "active" || status.health.verdict === "waiting"} warn={status.health.verdict === "degraded"} />

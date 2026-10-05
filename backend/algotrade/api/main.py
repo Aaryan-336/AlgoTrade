@@ -33,6 +33,7 @@ from algotrade.engine.insights import (
     change_pct,
     describe,
     last_and_prev,
+    live_prices,
     market_insights,
 )
 from algotrade.engine.runner import LiveRunner
@@ -281,6 +282,11 @@ def create_app(settings: Settings | None = None, runtime: Runtime | None = None,
         eng = rt.engine
         series = (eng.daily if timeframe == "1d" else eng.intraday).get(symbol) or \
             rt.repo.bars(symbol, timeframe, limit)
+        live = eng.live_bars.get(symbol) if timeframe == "1d" else None
+        if live is not None and (not series or series[-1].ts < live.ts):
+            series = [*series, live]  # today's forming candle, updated by every tick
+        else:
+            live = None
         fills = rt.repo.fills(symbol)
         pos = eng.portfolio.positions.get(symbol)
         return j({
@@ -291,7 +297,13 @@ def create_app(settings: Settings | None = None, runtime: Runtime | None = None,
                        "price": f.price} for f in fills],
             "position": {"avg_price": pos.avg_price, "stop": pos.stop, "target": pos.target,
                          "qty": pos.qty} if pos else None,
+            "live": live is not None,
         })
+
+    @app.get("/api/prices", dependencies=guard)
+    async def prices(request: Request) -> Any:
+        """Live prices (the dashboard polls this only if its WebSocket drops)."""
+        return j(live_prices(rt_of(request)))
 
     @app.get("/api/market", dependencies=guard)
     async def market(request: Request) -> Any:
@@ -381,16 +393,23 @@ def create_app(settings: Settings | None = None, runtime: Runtime | None = None,
         if not eng.ranking:
             eng.rank_now(now)
         names = {i.symbol: (i.name, i.sector) for i in rt.universe.instruments()}
+        live_rank = {str(r["symbol"]): r for r in eng.live_ranking}
         rows = []
         for r in eng.ranking:
             sym = str(r["symbol"])
-            live = eng.prices.get(sym)
+            last, prev = last_and_prev(eng, sym)
+            lr = live_rank.get(sym)
             rows.append({**r, "name": names.get(sym, (sym, ""))[0],
                          "sector": names.get(sym, ("", "Unknown"))[1],
-                         "ltp": live if live is not None else r.get("close")})
+                         "ltp": last if last is not None else r.get("close"),
+                         "change_pct": change_pct(last, prev),
+                         "live_score": lr.get("score") if lr else None,
+                         "live_status": lr.get("status") if lr else None,
+                         "live_reason": lr.get("reason") if lr else None})
         pending = {i.symbol: i.side.value for i in eng.pending}
         return j({
             "ranked_at": eng.ranking_at, "bar_ts": eng.latest_bar_ts(),
+            "live_ranked_at": eng.live_ranking_at if rt.calendar.is_open(now) else None,
             "last_cycle": eng.last_cycle, "regime": eng.regime,
             "max_positions": rt.config.risk.max_open_positions,
             "entry_threshold": rt.config.strategy.decision.entry_threshold,
@@ -658,6 +677,7 @@ def create_app(settings: Settings | None = None, runtime: Runtime | None = None,
                 rt: Runtime = websocket.app.state.rt
                 await websocket.send_json({"status": build_status(rt, websocket.app.state.runner),
                                            "portfolio": portfolio_view(rt),
+                                           "prices": j(live_prices(rt)),
                                            "sent_at": datetime.now(UTC).isoformat()})
                 await asyncio.sleep(2)
         except (WebSocketDisconnect, RuntimeError):

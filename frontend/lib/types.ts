@@ -237,6 +237,9 @@ export type WatchRow = {
   sentiment_raw?: number | null;
   status: "holding" | "buy_candidate" | "vetoed" | "below_threshold" | "no_signal" | "not_enough_history";
   reason: string;
+  live_score?: number | null;
+  live_status?: WatchRow["status"] | null;
+  live_reason?: string | null;
   stop?: number | null;
   target?: number | null;
   strategy?: string;
@@ -244,6 +247,7 @@ export type WatchRow = {
 
 export type Watchlist = {
   ranked_at: string | null;
+  live_ranked_at?: string | null;
   bar_ts: string | null;
   last_cycle: string | null;
   regime: Status["regime"];
@@ -319,3 +323,6 @@ export type Market = {
     vetoed: string[];
   } | null;
 };
+
+export type LivePrice = { ltp: number; chg: number | null; ts: string | null };
+export type LivePrices = Record<string, LivePrice>;

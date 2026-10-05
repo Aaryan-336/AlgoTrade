@@ -71,8 +71,9 @@ DATABASE_URL=sqlite:///./demo.db DATA_PROVIDER=replay algotrade-api
 2. At 09:20 the next morning, each intent is re-checked by the Risk Engine against live prices. If the stock gapped more than 2%, or any limit fails, it is rejected and the reason is logged.
 3. Market orders fill in the paper broker at the live price plus spread, slippage and full Zerodha delivery charges.
 4. A stop order is placed at the (simulated) broker right after every fill. It keeps protecting the position even if the engine halts.
-5. Throughout the day: prices are polled every 5 seconds; stops trigger; breakers, reconciliation and the watchdog run.
-6. News is fetched and scored every 30 minutes.
+5. Throughout the day: prices are polled every 5 seconds and streamed to the dashboard every 2 seconds (no reload needed); stops trigger; breakers, reconciliation and the watchdog run.
+6. Every minute the bot re-scores every stock on today's forming candle (the Watchlist's **Live score**: what it would decide if the day closed now). This is a preview; buys are still decided on the completed close, the way the strategy is backtested.
+7. News is fetched and scored every 30 minutes. If a holding gets negative material news, its exit is queued at once (still risk-checked) instead of waiting for the close.
 
 You can switch to 15-minute bars in Settings (outside market hours).
 
@@ -80,7 +81,7 @@ You can switch to 15-minute bars in Settings (outside market hours).
 
 ```bash
 cd backend
-pytest                        # 140 tests: unit, property (Hypothesis), integration, chaos
+pytest                        # 144 tests: unit, property (Hypothesis), integration, chaos
 pytest --cov=algotrade.risk --cov=algotrade.oms   # 100% on Risk Engine and OMS
 ruff check algotrade && mypy
 cd ../frontend && npm run typecheck && npm run build

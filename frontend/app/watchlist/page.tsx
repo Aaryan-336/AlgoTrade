@@ -3,10 +3,11 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
 import { useMemo, useState } from "react";
+import { LiveChange, LivePrice } from "@/components/live-price";
 import { Badge, Banner, Button, Card, Empty, ErrorNote, PageHeader, ScoreBar } from "@/components/ui";
 import { api, post } from "@/lib/api";
-import { ago, day, money, pct, signedMoney, tone } from "@/lib/format";
-import { useLive } from "@/lib/live";
+import { ago, day, money, signedMoney, tone } from "@/lib/format";
+import { useLive, useLiveInterval } from "@/lib/live";
 import type { Watchlist, WatchRow } from "@/lib/types";
 
 const STATUS: Record<WatchRow["status"], { label: string; tone: "pos" | "neg" | "warn" | "neutral" | "accent" }> = {
@@ -29,8 +30,9 @@ const FILTERS: { key: "all" | WatchRow["status"]; label: string }[] = [
 
 export default function WatchlistPage() {
   const qc = useQueryClient();
-  const { portfolio, status } = useLive();
-  const wl = useQuery({ queryKey: ["watchlist"], queryFn: () => api<Watchlist>("/api/watchlist"), refetchInterval: 30_000 });
+  const { portfolio, status, prices } = useLive();
+  const wl = useQuery({ queryKey: ["watchlist"], queryFn: () => api<Watchlist>("/api/watchlist"), refetchInterval: useLiveInterval(15_000) });
+  const liveOn = !!status?.market_open && !!wl.data?.live_ranked_at;
   const [filter, setFilter] = useState<(typeof FILTERS)[number]["key"]>("all");
   const scan = useMutation({
     mutationFn: () => post<{ intents: number; ranked: number }>("/api/engine/scan"),
@@ -60,7 +62,7 @@ export default function WatchlistPage() {
         title="Watchlist"
         sub={
           wl.data?.bar_ts
-            ? `Every stock in your universe, ranked by the bot's score on the ${day(wl.data.bar_ts)} close. Updated ${ago(wl.data.ranked_at)}.`
+            ? `Every stock in your universe, ranked by the bot's score on the ${day(wl.data.bar_ts)} close.${liveOn ? ` Prices stream live; the live score was refreshed ${ago(wl.data?.live_ranked_at)}.` : ` Updated ${ago(wl.data.ranked_at)}.`}`
             : "Every stock in your universe, ranked by the bot's score."
         }
         action={
@@ -114,7 +116,7 @@ export default function WatchlistPage() {
                   <tr key={`h-${p.symbol}`}>
                     <td><Link href={`/chart?symbol=${encodeURIComponent(p.symbol)}`} className="font-medium hover:text-accent">{p.symbol}</Link><div className="text-[11px] text-muted">{p.sector}</div></td>
                     <td><Badge tone="accent">Holding</Badge>{pending[p.symbol] === "SELL" && <span className="ml-1"><Badge tone="neg">Selling next session</Badge></span>}</td>
-                    <td className="r num">{money(p.ltp)}</td>
+                    <td className="r"><LivePrice value={prices[p.symbol]?.ltp ?? p.ltp} /></td>
                     <td>{byPrice[p.symbol]?.score != null ? <ScoreBar value={byPrice[p.symbol].score!} /> : "—"}</td>
                     <td className="r num">{money(p.stop)}</td>
                     <td className="r num">{money(p.target)}</td>
@@ -126,7 +128,7 @@ export default function WatchlistPage() {
                   <tr key={`b-${r.symbol}`}>
                     <td><Link href={`/chart?symbol=${encodeURIComponent(r.symbol)}`} className="font-medium hover:text-accent">{r.symbol}</Link><div className="text-[11px] text-muted">{r.sector}</div></td>
                     <td>{pending[r.symbol] === "BUY" ? <Badge tone="pos">Buying next session</Badge> : <Badge tone="neutral">Next in line</Badge>}</td>
-                    <td className="r num">{money(r.ltp)}</td>
+                    <td className="r"><LivePrice value={prices[r.symbol]?.ltp ?? r.ltp} /></td>
                     <td>{r.score != null ? <ScoreBar value={r.score} /> : "—"}</td>
                     <td className="r num">{money(r.stop)}</td>
                     <td className="r num">{money(r.target)}</td>
@@ -174,7 +176,8 @@ export default function WatchlistPage() {
                   <th>Stock</th>
                   <th className="r">Price</th>
                   <th className="r">Day</th>
-                  <th>Score</th>
+                  <th title="Score on the last completed close: this is what the bot trades on">Score</th>
+                  {liveOn && <th title="Re-scored every minute on today's forming candle: what the bot would decide if the day closed now. It does not trade on this.">Live score</th>}
                   <th className="r" title="Trend · Momentum · Volume · News (each 0-1)">Trend · Mom · Vol · News</th>
                   <th>Status</th>
                   <th>Why</th>
@@ -188,9 +191,21 @@ export default function WatchlistPage() {
                       <Link href={`/chart?symbol=${encodeURIComponent(r.symbol)}`} className="font-medium hover:text-accent">{r.symbol}</Link>
                       <div className="text-[11px] text-muted">{r.name} · {r.sector}</div>
                     </td>
-                    <td className="r num">{money(r.ltp)}</td>
-                    <td className={`r num ${tone(r.change_pct)}`}>{pct(r.change_pct, 2, true)}</td>
+                    <td className="r"><LivePrice value={prices[r.symbol]?.ltp ?? r.ltp} /></td>
+                    <td className="r"><LiveChange value={prices[r.symbol]?.chg ?? r.change_pct} /></td>
                     <td>{r.score != null ? <ScoreBar value={r.score} /> : <span className="text-muted">—</span>}</td>
+                    {liveOn && (
+                      <td title={r.live_reason ?? undefined}>
+                        {r.live_score != null ? (
+                          <span className="flex items-center gap-1.5">
+                            <ScoreBar value={r.live_score} />
+                            {r.live_status === "buy_candidate" && r.status !== "buy_candidate" && <Badge tone="pos">new</Badge>}
+                          </span>
+                        ) : (
+                          <span className="text-muted">—</span>
+                        )}
+                      </td>
+                    )}
                     <td className="r num text-[12px] text-ink-2">
                       {r.trend !== undefined ? [r.trend, r.momentum, r.volume, r.sentiment].map((x) => (x ?? 0).toFixed(2)).join(" · ") : "—"}
                     </td>
@@ -205,6 +220,12 @@ export default function WatchlistPage() {
         <p className="border-t border-line px-4 py-3 text-[12px] text-muted">
           A stock becomes a buy candidate when a strategy fires <em>and</em> its score is at least {wl.data?.entry_threshold ?? "—"}
           {" "}<em>and</em> no veto applies (market filter, bad news, event day, illiquid).
+          {liveOn && (
+            <>
+              {" "}The live score re-runs the same rules every minute on today&apos;s forming candle. It is a preview: buys are
+              still decided on the completed close at 15:40, the way the strategy was backtested.
+            </>
+          )}
         </p>
       </Card>
     </div>

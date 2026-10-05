@@ -10,6 +10,9 @@ import {
   LineSeries,
   LineStyle,
   type IChartApi,
+  type IPriceLine,
+  type ISeriesApi,
+  type ISeriesMarkersPluginApi,
   type SeriesMarker,
   type Time,
   type UTCTimestamp,
@@ -88,6 +91,7 @@ export function CandleChart({
   stop,
   target,
   entry,
+  livePrice,
   height = 440,
 }: {
   bars: Candle[];
@@ -95,25 +99,37 @@ export function CandleChart({
   stop?: number | null;
   target?: number | null;
   entry?: number | null;
+  /** Latest streamed price: moves today's candle between data refreshes. */
+  livePrice?: number | null;
   height?: number;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const theme = useThemeKey();
+  const chartRef = useRef<IChartApi | null>(null);
+  const candlesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
+  const volRef = useRef<ISeriesApi<"Histogram"> | null>(null);
+  const markersRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
+  const linesRef = useRef<IPriceLine[]>([]);
+  const shownRef = useRef<{ first: number; count: number } | null>(null);
+  const lastRef = useRef<Candle | null>(null);
+
+  // Build the chart once per theme/size; data updates below never rebuild it,
+  // so zoom and scroll position survive live updates.
   useEffect(() => {
-    if (!ref.current || bars.length === 0) return;
+    if (!ref.current) return;
     const chart = baseChart(ref.current, height);
     const pos = token("--pos");
     const neg = token("--neg");
-    const candles = chart.addSeries(CandlestickSeries, {
+    candlesRef.current = chart.addSeries(CandlestickSeries, {
       upColor: pos,
       downColor: neg,
       wickUpColor: pos,
       wickDownColor: neg,
       borderVisible: false,
-      priceLineVisible: false,
+      priceLineVisible: true,
+      priceLineStyle: LineStyle.Dotted,
     });
-    candles.setData(bars.map((b) => ({ time: b.t as UTCTimestamp, open: b.o, high: b.h, low: b.l, close: b.c })));
-    const vol = chart.addSeries(HistogramSeries, {
+    volRef.current = chart.addSeries(HistogramSeries, {
       priceScaleId: "vol",
       priceFormat: { type: "volume" },
       color: token("--border-strong"),
@@ -121,8 +137,58 @@ export function CandleChart({
       priceLineVisible: false,
     });
     chart.priceScale("vol").applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } });
-    vol.setData(bars.map((b) => ({ time: b.t as UTCTimestamp, value: b.v })));
+    markersRef.current = createSeriesMarkers(candlesRef.current, []);
+    chartRef.current = chart;
+    shownRef.current = null;
+    linesRef.current = [];
+    return () => {
+      chart.remove();
+      chartRef.current = candlesRef.current = volRef.current = markersRef.current = null;
+    };
+  }, [height, theme]);
 
+  // Data: a full reload when the series changes (new symbol, new day), otherwise
+  // only the last candle is updated in place.
+  useEffect(() => {
+    const candles = candlesRef.current;
+    const vol = volRef.current;
+    if (!candles || !vol || bars.length === 0) return;
+    const toC = (b: Candle) => ({ time: b.t as UTCTimestamp, open: b.o, high: b.h, low: b.l, close: b.c });
+    const shown = shownRef.current;
+    const last = bars[bars.length - 1];
+    if (!shown || shown.first !== bars[0].t || Math.abs(shown.count - bars.length) > 1) {
+      candles.setData(bars.map(toC));
+      vol.setData(bars.map((b) => ({ time: b.t as UTCTimestamp, value: b.v })));
+      chartRef.current?.timeScale().fitContent();
+    } else {
+      if (bars.length > shown.count) {
+        const prev = bars[bars.length - 2];
+        candles.update(toC(prev));
+        vol.update({ time: prev.t as UTCTimestamp, value: prev.v });
+      }
+      candles.update(toC(last));
+      vol.update({ time: last.t as UTCTimestamp, value: last.v });
+    }
+    shownRef.current = { first: bars[0].t, count: bars.length };
+    lastRef.current = last;
+  }, [bars, theme]);
+
+  // Every streamed price moves today's candle without waiting for a refetch.
+  useEffect(() => {
+    const candles = candlesRef.current;
+    const last = lastRef.current;
+    if (!candles || !last || livePrice == null) return;
+    const moved = { ...last, c: livePrice, h: Math.max(last.h, livePrice), l: Math.min(last.l, livePrice) };
+    lastRef.current = moved;
+    candles.update({ time: moved.t as UTCTimestamp, open: moved.o, high: moved.h, low: moved.l, close: moved.c });
+  }, [livePrice]);
+
+  // Fills and the entry/stop/target lines.
+  useEffect(() => {
+    const candles = candlesRef.current;
+    if (!candles || bars.length === 0) return;
+    const pos = token("--pos");
+    const neg = token("--neg");
     // Snap fills to the bar they happened in so markers render on daily charts.
     const times = bars.map((b) => b.t);
     const snap = (t: number) => {
@@ -140,17 +206,18 @@ export function CandleChart({
         text: `${f.side === "BUY" ? "B" : "S"} ${f.qty}`,
       }));
     markers.sort((a, b) => (a.time as number) - (b.time as number));
-    createSeriesMarkers(candles, markers);
+    markersRef.current?.setMarkers(markers);
 
+    for (const l of linesRef.current) candles.removePriceLine(l);
+    linesRef.current = [];
     const line = (price: number | null | undefined, title: string, color: string, style: LineStyle) => {
-      if (price) candles.createPriceLine({ price, title, color, lineStyle: style, lineWidth: 1, axisLabelVisible: true });
+      if (price) linesRef.current.push(candles.createPriceLine({ price, title, color, lineStyle: style, lineWidth: 1, axisLabelVisible: true }));
     };
     line(entry, "entry", token("--muted"), LineStyle.Dotted);
     line(stop, "stop", neg, LineStyle.Dashed);
     line(target, "target", pos, LineStyle.Dashed);
-    chart.timeScale().fitContent();
-    return () => chart.remove();
-  }, [bars, fills, stop, target, entry, height, theme]);
+  }, [bars, fills, stop, target, entry, theme]);
+
   return <div ref={ref} style={{ height }} className="w-full" />;
 }
 

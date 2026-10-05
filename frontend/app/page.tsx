@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useMemo } from "react";
 import { ActivityFeed, BotStatus } from "@/components/bot-status";
 import { EquityChart } from "@/components/charts";
+import { LivePrice } from "@/components/live-price";
 import { MarketInsights } from "@/components/market";
 import { TickerTape } from "@/components/tradingview";
 import { Badge, Banner, Button, Card, Empty, Meter, Stat } from "@/components/ui";
@@ -25,7 +26,7 @@ export default function Overview() {
   const market = useQuery({
     queryKey: ["market"],
     queryFn: () => api<Market>("/api/market"),
-    refetchInterval: status?.market_open ? 10_000 : 60_000,
+    refetchInterval: status?.market_open ? 5_000 : 60_000,
   });
   const activity = useQuery({
     queryKey: ["activity"],
@@ -219,7 +220,7 @@ export default function Overview() {
                       </td>
                       <td className="r num">{p.qty}</td>
                       <td className="r num">{money(p.avg_price)}</td>
-                      <td className="r num">{money(p.ltp)}</td>
+                      <td className="r"><LivePrice value={p.ltp} /></td>
                       <td className={`r num ${tone(p.pnl)}`}>
                         {signedMoney(p.pnl)}
                         <div className="text-[11px]">{pct(p.pnl_pct, 2, true)}</div>

@@ -26,6 +26,7 @@ HISTORY_DAYS = 420
 DAILY_CYCLE_AT = time(15, 40)
 MORNING_BRIEF_AT = time(9, 0)
 EVENING_BRIEF_AT = time(15, 50)
+LIVE_CANDLE_EVERY = timedelta(minutes=5)
 
 
 class LiveRunner:
@@ -45,6 +46,8 @@ class LiveRunner:
         self.last_error: str = ""
         self.last_tick_count = 0
         self.health_watch = HealthWatch()
+        self._candle_task: asyncio.Task[None] | None = None
+        self.last_live_candles: datetime | None = None
         self._ping_task: asyncio.Task[None] | None = None
 
     # ------------------------------------------------------------ control
@@ -57,7 +60,8 @@ class LiveRunner:
 
     async def stop(self) -> None:
         self.running = False
-        for t in (self._task, self._news_task, self._history_task, self._ping_task):
+        for t in (self._task, self._news_task, self._history_task, self._ping_task,
+                  self._candle_task):
             if t:
                 t.cancel()
         self._task = None
@@ -143,6 +147,12 @@ class LiveRunner:
                 eng.snapshot_equity(now)
             if cal.is_trading_day(today) and time(9, 15) <= local.time() <= time(15, 30):
                 self.health_watch.check(rt, self, now)
+            if market_open and ready:
+                self.maybe_refresh_live_candles(now)
+                try:
+                    eng.rank_live(now)
+                except Exception:  # the live view must never disturb trading
+                    log.warning("live re-score failed\n%s", traceback.format_exc())
             self.maybe_send_briefs(now)
             self.ping_healthcheck()
 
@@ -169,6 +179,28 @@ class LiveRunner:
             rt.notifier.send(now, "info", evening_brief(rt, now))
             sent["evening"] = day
             rt.repo.set_state("briefs", sent, now)
+
+    def maybe_refresh_live_candles(self, now: datetime) -> None:
+        """Every 5 minutes, pull today's forming daily candle (true open, high, low
+        and volume so far) in the background. Ticks keep the close current."""
+        if self._candle_task and not self._candle_task.done():
+            return
+        if self.last_live_candles and now - self.last_live_candles < LIVE_CANDLE_EVERY:
+            return
+        self.last_live_candles = now
+
+        async def fetch() -> None:
+            rt = self.rt
+            day = rt.engine._day_ts(now)
+            for sym in self.symbols:
+                try:
+                    bars = await rt.provider.intraday(sym, "1d")
+                except ProviderError:
+                    continue
+                if bars and bars[-1].ts == day:
+                    rt.engine.merge_live_candle(bars[-1])
+
+        self._candle_task = asyncio.create_task(fetch(), name="live-candles")
 
     def ping_healthcheck(self) -> None:
         """Dead-man's switch: if these pings stop, the monitor alerts you."""
@@ -299,12 +331,15 @@ class LiveRunner:
         rt = self.rt
         try:
             await rt.news.run(rt.universe.instruments(), now, rt.config.strategy.sentiment)
+            # Bad news on a holding: queue the exit now, not at the next close.
+            rt.engine.news_exits(rt.clock.now())
         except Exception as exc:  # news must never break trading
             log.warning("news cycle failed: %s", exc)
             rt.notifier.send(now, "warning", f"News cycle failed: {type(exc).__name__}")
 
     def status(self) -> dict[str, Any]:
         return {"running": self.running, "last_error": self.last_error,
+                "live_ranking_at": self.rt.engine.live_ranking_at,
                 "history_loaded_for": self.history_loaded_for,
                 "history_source": self.history_source,
                 "daily_cycle_done_for": self.daily_cycle_done_for,

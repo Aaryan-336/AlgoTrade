@@ -46,6 +46,21 @@ def change_pct(last: Decimal | None, prev: Decimal | None) -> float | None:
     return float((last / prev - 1) * 100)
 
 
+def live_prices(rt: Runtime) -> dict[str, dict[str, Any]]:
+    """Latest price, change versus the previous close, and its timestamp, for
+    every symbol the bot follows. Streamed to the dashboard every 2 seconds."""
+    eng = rt.engine
+    rc = rt.config.strategy.regime
+    out: dict[str, dict[str, Any]] = {}
+    for sym in [*rt.universe.symbols, rc.index_symbol, rc.vix_symbol]:
+        last, prev = last_and_prev(eng, sym)
+        if last is None:
+            continue
+        out[sym] = {"ltp": float(last), "chg": change_pct(last, prev),
+                    "ts": eng.price_ts.get(sym)}
+    return out
+
+
 # ---------------------------------------------------------------- market
 def market_insights(rt: Runtime, now: datetime) -> dict[str, Any]:
     eng = rt.engine
@@ -292,6 +307,10 @@ def bot_health(rt: Runtime, runner: LiveRunner, now: datetime) -> dict[str, Any]
         detail = (f"Scored {len(eng.ranking)} stocks on the {bar_day} close · "
                   f"{candidates} candidates · planned {buys} buys, {sells} sells.")
         stale = bar_ts is not None and eng.last_bar_ts is not None and bar_ts > eng.last_bar_ts
+        if market_open and eng.live_ranking_at is not None:
+            live_c = sum(1 for r in eng.live_ranking if r.get("status") == "buy_candidate")
+            detail += (f" Live re-score {_ago(now, eng.live_ranking_at)}: {live_c} would "
+                       "qualify if the day closed now.")
         steps.append(_step("decision", "Decision cycle", "warn" if stale else "ok",
                            detail + (" A newer close is waiting to be analysed." if stale
                                      else ""), eng.last_cycle, nxt_cycle))
@@ -399,6 +418,8 @@ def describe(event: str, actor: str, p: dict[str, Any]) -> tuple[str, str, str] 
         word = event.split(".")[1]
         return "trade", "warning" if word == "rejected" else "info", \
             f"Order {p.get('side')} {sym} {word}" + (f": {p['reason']}" if p.get("reason") else "")
+    if event == "news.exit":
+        return "trade", "warning", f"Selling {sym} at the next chance: {p.get('reason')}"
     if event == "breaker.tripped":
         return "safety", "critical", f"Breaker {p.get('breaker')} tripped: {p.get('reason')}"
     if event == "breaker.reset":

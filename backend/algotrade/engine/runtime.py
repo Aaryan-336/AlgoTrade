@@ -178,6 +178,7 @@ class Runtime:
         self.engine = self.build_engine()
         self.engine.daily, self.engine.prev_close = old.daily, old.prev_close
         self.engine.prices, self.engine.price_ts = old.prices, old.price_ts
+        self.engine.live_bars = old.live_bars
         self.audit.record(self.clock.now(), "system", "config.activated",
                           {"version": self.config_version,
                            "fingerprint": self.config.fingerprint()},

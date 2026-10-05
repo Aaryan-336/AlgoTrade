@@ -14,8 +14,8 @@ from __future__ import annotations
 
 from collections import deque
 from collections.abc import Iterable
-from dataclasses import dataclass
-from datetime import datetime, timedelta
+from dataclasses import dataclass, replace
+from datetime import datetime, time, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -23,7 +23,7 @@ from algotrade.audit.logger import AuditLog
 from algotrade.brokers.costs import CostModel
 from algotrade.brokers.paper import PaperBroker
 from algotrade.config.models import AppConfig
-from algotrade.core.clock import MarketCalendar, to_ist
+from algotrade.core.clock import IST, MarketCalendar, to_ist
 from algotrade.core.types import (
     Bar,
     Fill,
@@ -139,6 +139,12 @@ class TradingEngine:
         self.trades: list[ClosedTrade] = []
         self.ranking: list[dict[str, Any]] = []
         self.ranking_at: datetime | None = None
+        # Today's forming daily candle per symbol, from live ticks (and the
+        # broker's intraday candle when available). Never added to history:
+        # decisions that trade still run on completed bars only.
+        self.live_bars: dict[str, Bar] = {}
+        self.live_ranking: list[dict[str, Any]] = []
+        self.live_ranking_at: datetime | None = None
 
     # ============================================================ utilities
     def _audit(self, now: datetime, event: str, payload: dict[str, Any],
@@ -288,8 +294,97 @@ class TradingEngine:
             return []
         self.prices[tick.symbol] = tick.ltp
         self.price_ts[tick.symbol] = tick.ts
+        self._update_live_bar(tick.symbol, tick.ltp, tick.ts)
         return self.broker.on_market(tick.symbol, tick.ts, tick.ltp, tick.ltp, tick.ltp,
                                      tick.ltp)
+
+    @staticmethod
+    def _day_ts(ts: datetime) -> datetime:
+        """Daily bars are stamped at midnight IST of their session."""
+        return datetime.combine(to_ist(ts).date(), time(0, 0), tzinfo=IST).astimezone(ts.tzinfo)
+
+    def _update_live_bar(self, symbol: str, price: Decimal, ts: datetime) -> None:
+        day = self._day_ts(ts)
+        hist = self.daily.get(symbol)
+        if hist and hist[-1].ts >= day:
+            self.live_bars.pop(symbol, None)  # today's real bar is already in
+            return
+        b = self.live_bars.get(symbol)
+        if b is None or b.ts != day:
+            self.live_bars[symbol] = Bar(symbol, "1d", day, price, price, price, price, 0)
+        else:
+            self.live_bars[symbol] = replace(b, high=max(b.high, price), low=min(b.low, price),
+                                             close=price)
+
+    def merge_live_candle(self, bar: Bar) -> None:
+        """Take open, high, low and volume from the broker's intraday daily candle;
+        keep the latest tick as the close."""
+        hist = self.daily.get(bar.symbol)
+        if hist and hist[-1].ts >= bar.ts:
+            return
+        cur = self.live_bars.get(bar.symbol)
+        close = cur.close if cur is not None and cur.ts == bar.ts else bar.close
+        self.live_bars[bar.symbol] = replace(bar, timeframe="1d", close=close,
+                                             high=max(bar.high, close), low=min(bar.low, close))
+
+    def _with_live(self, symbol: str) -> list[Bar]:
+        hist = self.daily.get(symbol, [])
+        lb = self.live_bars.get(symbol)
+        if lb is not None and (not hist or hist[-1].ts < lb.ts):
+            return [*hist[-(FEATURE_BARS - 1):], lb]
+        return hist[-FEATURE_BARS:]
+
+    def rank_live(self, now: datetime) -> list[dict[str, Any]]:
+        """Re-score every stock on today's forming candle: what the bot would decide
+        if the session closed now. Read-only: it never creates intents."""
+        feats = {s: FeatureSet(self._with_live(s)) for s in self.universe.symbols
+                 if s in self.live_bars and self.daily.get(s)}
+        if not feats:
+            self.live_ranking, self.live_ranking_at = [], now
+            return []
+        self._load_sentiment(now)
+        rc = self.cfg.strategy.regime
+        idx = self._with_live(rc.index_symbol)
+        vix = self.prices.get(rc.vix_symbol) or (
+            self.daily[rc.vix_symbol][-1].close if self.daily.get(rc.vix_symbol) else None)
+        self.live_ranking = self.decision.rank(now, feats, self.portfolio.positions,
+                                               self.sentiment, FeatureSet(idx) if idx else None,
+                                               float(vix) if vix is not None else None)
+        self.live_ranking_at = now
+        return self.live_ranking
+
+    def news_exits(self, now: datetime) -> int:
+        """React to fresh bad news straight away instead of waiting for the close:
+        queue an exit for any holding with negative material news. The exit still
+        goes through the Risk Engine at execution."""
+        sc = self.cfg.strategy.sentiment
+        if not (sc.enabled and sc.exit_on_negative_material) or not self.portfolio.positions:
+            return 0
+        self._load_sentiment(now)
+        expires = expiry_for(now, "1d", 1, self.calendar)
+        n = 0
+        for sym, pos in self.portfolio.positions.items():
+            agg = self.sentiment.get(sym)
+            if agg is None or not agg.negative_material:
+                continue
+            if any(i.symbol == sym and i.kind is IntentKind.EXIT for i in self.pending):
+                continue
+            if any(o.purpose == "exit" for o in self.oms.working_orders(sym)):
+                continue
+            did = f"D{to_ist(now):%Y%m%d%H%M}-{sym}-newsexit"
+            why = "negative material news" + (f": {agg.reasons[0]}" if agg.reasons else "")
+            self.pending.append(OrderIntent(
+                did, sym, Side.SELL, IntentKind.EXIT, pos.strategy, why,
+                self.prices.get(sym, pos.avg_price), now, now, expires))
+            if self.repo:
+                self.repo.save_decision(did, now, sym, "exit", 0.0, {}, "intent", why,
+                                        self.config_version)
+            self._audit(now, "news.exit", {"symbol": sym, "reason": why}, did)
+            self.notifier.send(now, "warning", f"Selling {sym}: {why}")
+            n += 1
+        if n:
+            self._save_state(now)
+        return n
 
     def set_price(self, symbol: str, price: Decimal, ts: datetime) -> None:
         self.prices[symbol] = price
